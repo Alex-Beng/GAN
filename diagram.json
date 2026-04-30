@@ -8,8 +8,18 @@
       "id": "esp",
       "top": 0,
       "left": 0,
-      "attrs": {}
+      "attrs": { "serialInterface": "USB_SERIAL_JTAG" }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "led1",
+      "top": -50,
+      "left": 50,
+      "attrs": { "color": "red", "label": "LED" }
     }
   ],
-  "connections": []
+  "connections": [
+    ["esp:2", "led1:A", "green", ["v0"]],
+    ["esp:GND", "led1:C", "black", ["v0"]]
+  ]
 }

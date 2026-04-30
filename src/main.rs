@@ -1,10 +1,23 @@
 fn main() {
-    // It is necessary to call this function once. Otherwise, some patches to the runtime
-    // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
     esp_idf_svc::sys::link_patches();
-
-    // Bind the log crate to the ESP Logging facilities
+    esp_idf_svc::hal::delay::FreeRtos::delay_ms(1000);
     esp_idf_svc::log::EspLogger::initialize_default();
 
-    log::info!("Hello, world!");
+    log::info!("LED blink demo starting!");
+
+    let peripherals = esp_idf_svc::hal::peripherals::Peripherals::take().unwrap();
+    let mut led2 = esp_idf_svc::hal::gpio::PinDriver::output(peripherals.pins.gpio2).unwrap();
+    let mut led8 = esp_idf_svc::hal::gpio::PinDriver::output(peripherals.pins.gpio8).unwrap();
+
+    loop {
+        led2.set_high().unwrap();
+        led8.set_high().unwrap();
+        log::info!("LED ON");
+        esp_idf_svc::hal::delay::FreeRtos::delay_ms(500);
+
+        led2.set_low().unwrap();
+        led8.set_low().unwrap();
+        log::info!("LED OFF");
+        esp_idf_svc::hal::delay::FreeRtos::delay_ms(500);
+    }
 }

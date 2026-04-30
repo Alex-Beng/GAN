@@ -1,4 +1,6 @@
 [wokwi]
 version = 1
 firmware = "target/riscv32imc-esp-espidf/debug/gan-cube-emu"
+elf = "target/riscv32imc-esp-espidf/debug/gan-cube-emu"
 gdbServerPort = 3333
+rfc2217ServerPort = 4000
