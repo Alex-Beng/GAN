@@ -1,23 +1,30 @@
+mod ble;
+mod crypto;
+mod device_config;
+mod http;
+mod protocol;
+mod wifi;
+
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
+use esp_idf_svc::eventloop::EspSystemEventLoop;
+use esp_idf_svc::hal::peripherals::Peripherals;
+use esp_idf_svc::nvs::EspDefaultNvsPartition;
+
 fn main() {
     esp_idf_svc::sys::link_patches();
-    esp_idf_svc::hal::delay::FreeRtos::delay_ms(1000);
     esp_idf_svc::log::EspLogger::initialize_default();
 
-    log::info!("LED blink demo starting!");
+    let peripherals = Peripherals::take().unwrap();
+    let sys_loop = EspSystemEventLoop::take().unwrap();
+    let nvs = EspDefaultNvsPartition::take().unwrap();
 
-    let peripherals = esp_idf_svc::hal::peripherals::Peripherals::take().unwrap();
-    let mut led2 = esp_idf_svc::hal::gpio::PinDriver::output(peripherals.pins.gpio2).unwrap();
-    let mut led8 = esp_idf_svc::hal::gpio::PinDriver::output(peripherals.pins.gpio8).unwrap();
+    let queue: Arc<Mutex<VecDeque<(u8, u8)>>> = Arc::new(Mutex::new(VecDeque::new()));
+    let cube_state: Arc<Mutex<protocol::CubeState>> = Arc::new(Mutex::new(protocol::CubeState::solved()));
 
-    loop {
-        led2.set_high().unwrap();
-        led8.set_high().unwrap();
-        log::info!("LED ON");
-        esp_idf_svc::hal::delay::FreeRtos::delay_ms(500);
+    let _wifi = wifi::start_wifi(peripherals.modem, sys_loop, nvs).unwrap();
+    let _server = http::start_http_server(queue.clone(), _wifi.clone(), cube_state.clone()).unwrap();
 
-        led2.set_low().unwrap();
-        led8.set_low().unwrap();
-        log::info!("LED OFF");
-        esp_idf_svc::hal::delay::FreeRtos::delay_ms(500);
-    }
+    esp_idf_svc::hal::task::block_on(ble::run(queue, cube_state));
 }
