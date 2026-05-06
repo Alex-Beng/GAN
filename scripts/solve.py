@@ -66,21 +66,29 @@ def kociemba_to_rubik_cube(k_facelets):
     cross[45:54] = d
     return ''.join(COLOR_MAP[c] for c in cross)
 
-def solve_cfop(facelets):
+def solve_cfop(facelets, debug=False):
     try:
+        import cfop_solver
         from cfop_solver import CFOPSolver
     except ImportError:
         print("cfop_solver.py not found in scripts/")
         sys.exit(1)
+    cfop_solver.DEBUG = debug
     solver = CFOPSolver()
     result = solver.solve(facelets)
     if result is None:
         print("No CFOP solution found")
         sys.exit(1)
-    print(f"  Cross: {result['cross']}")
-    print(f"  F2L: {result['f2l']}")
-    print(f"  OLL: {result['oll']}")
-    print(f"  PLL: {result['pll']}")
+    cross_n = len(result['cross'].split()) if result['cross'] else 0
+    f2l_n   = len(result['f2l'].split())   if result['f2l']   else 0
+    oll_n   = len(result['oll'].split())   if result['oll']   else 0
+    pll_n   = len(result['pll'].split())   if result['pll']   else 0
+    total_n = cross_n + f2l_n + oll_n + pll_n
+    print(f"  Cross ({cross_n}): {result['cross']}")
+    print(f"  F2L   ({f2l_n}): {result['f2l']}")
+    print(f"  OLL   ({oll_n}): {result['oll']}")
+    print(f"  PLL   ({pll_n}): {result['pll']}")
+    print(f"  Total : {total_n} moves")
     return result['solution']
 
 def solve_kociemba(facelets):
@@ -104,7 +112,7 @@ def solve_min2phase(facelets, java_dir=None):
         print(f"Java solver error: {result.stderr.strip()}")
         sys.exit(1)
     output = result.stdout.strip()
-    
+    return output
     return random.choice(ZERO_MOVES) + ' ' + output
 
 
@@ -138,8 +146,9 @@ def send_moves(base, moves):
 def main():
     parser = argparse.ArgumentParser(description='GAN Cube Solver')
     parser.add_argument('host', nargs='?', default='192.168.50.246', help='Device IP address')
-    parser.add_argument('--method', choices=['cfop', 'kociemba', 'min2phase'], default='min2phase', help='Solving method (default: cfop)')
+    parser.add_argument('--method', choices=['cfop', 'kociemba', 'min2phase'], default='cfop', help='Solving method (default: cfop)')
     parser.add_argument('--send', action='store_true', help='Send solution to device')
+    parser.add_argument('--debug', action='store_true', help='Enable debug output')
     args = parser.parse_args()
     base = f"http://{args.host}"
 
@@ -154,7 +163,7 @@ def main():
 
     print(f"Solving with {args.method.upper()}...")
     if args.method == 'cfop':
-        solution = solve_cfop(facelets)
+        solution = solve_cfop(facelets, debug=args.debug)
     elif args.method == 'kociemba':
         solution = solve_kociemba(facelets)
     else:

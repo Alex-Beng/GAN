@@ -2,6 +2,12 @@ import os
 import pickle
 from collections import deque
 
+DEBUG = False
+
+def _dbg(*args, **kwargs):
+    if DEBUG:
+        print(*args, **kwargs)
+
 SOLVED_FACELET = "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB"
 
 MOVE_CP = [
@@ -104,195 +110,66 @@ ROTATION_FACE_MAP = {
     'z': {'U': 'L', 'R': 'U', 'D': 'R', 'L': 'D', 'F': 'F', 'B': 'B'},
 }
 
+DOUBLE_MOVE_MAP = {
+    'u':  {1: ["D",  'y'],        2: ["D2", 'y', 'y'],        3: ["D'",  'y', 'y', 'y']},
+    'd':  {1: ["U",  'y','y','y'],2: ["U2", 'y', 'y'],        3: ["U'",  'y']},
+    'r':  {1: ["L",  'x'],        2: ["L2", 'x', 'x'],        3: ["L'",  'x', 'x', 'x']},
+    'l':  {1: ["R",  'x','x','x'],2: ["R2", 'x', 'x'],        3: ["R'",  'x']},
+    'f':  {1: ["B",  'z'],        2: ["B2", 'z', 'z'],        3: ["B'",  'z', 'z', 'z']},
+    'b':  {1: ["F",  'z','z','z'],2: ["F2", 'z', 'z'],        3: ["F'",  'z']},
+}
+
+EMS_MOVE_MAP = {
+    'E': {1: ["D'", "U",  'y','y','y'], 2: ["D2", "U2", 'y','y'], 3: ["D",  "U'", 'y']},
+    'M': {1: ["L'", "R",  'x','x','x'], 2: ["L2", "R2", 'x','x'], 3: ["L",  "R'", 'x']},
+    'S': {1: ["F'", "B",  'z'],         2: ["F2", "B2", 'z','z'], 3: ["F",  "B'", 'z','z','z']},
+}
+
 def apply_rotation(face, rot):
     return ROTATION_FACE_MAP[rot].get(face, face)
 
 def convert_alg_to_basic(alg_str):
     tokens = alg_str.strip().split()
-    result = []
-    rotations = []
 
+    MOD_COUNT = {'': 1, "'": 3, '2': 2}
+
+    expanded = []
     for t in tokens:
         if not t:
             continue
         base = t[0]
         mod = t[1] if len(t) > 1 else ''
-        count = {'': 1, "'": 3, '2': 2}.get(mod, 1)
-
+        count = MOD_COUNT.get(mod, 1)
 
         if base in 'URFDLB':
-            face = base
-            for r in rotations:
-                face = apply_rotation(face, r)
-            if count == 1:
-                result.append(face)
-            elif count == 2:
-                result.append(face + '2')
-            elif count == 3:
-                result.append(face + "'")
-        
-        elif base in 'urfdlb':
-            face = base.upper()
-            lface = face
-            for r in rotations:
-                face = apply_rotation(face, r)
-            base = face.lower()
-            # print(f"base: {base}, olface: {lface}, new face: {face}, rotations: {rotations}, count {count}")
-            if base == 'r':
-                for _ in range(count % 4):
-                    face = 'L'
-                    result.append(face)
-                for _ in range(count % 4):
-                    # print(rotations)
-                    rotations.append('x')
-
-            elif base == 'l':
-                for _ in range(count % 4):
-                    face = 'R'
-                    result.append(face)
-                for _ in range(count % 4):
-                    rotations.append('x')
-                    rotations.append('x')
-                    rotations.append('x')
-
-            elif base == 'f':
-                for _ in range(count % 4):
-                    face = 'B'
-                    result.append(face)
-                for _ in range(count % 4):
-                    rotations.append('z')
-
-            elif base == 'b':
-                for _ in range(count % 4):
-                    face = 'F'
-                    result.append(face)
-                for _ in range(count % 4):
-                    rotations.append('z')
-                    rotations.append('z')
-                    rotations.append('z')
-
-            elif base == 'u':
-                for _ in range(count % 4):
-                    face = 'D'
-                    result.append(face)
-                for _ in range(count % 4):
-                    rotations.append('y')
-
-            elif base == 'd':
-                for _ in range(count % 4):
-                    face = 'U'
-                    result.append(face)
-                for _ in range(count % 4):
-                    rotations.append('y')
-                    rotations.append('y')
-                    rotations.append('y')
-
-
-        elif base == 'M':
-            if count == 1:  # M
-                face_l = 'L'
-                face_r = 'R'
-                for r in rotations:
-                    face_l = apply_rotation(face_l, r)
-                    face_r = apply_rotation(face_r, r)
-                result.append(face_l + "'")
-                result.append(face_r)
-                rotations.append('x')
-                rotations.append('x')
-                rotations.append('x')
-            elif count == 2:  # M2
-                face_l = 'L'
-                face_r = 'R'
-                for r in rotations:
-                    face_l = apply_rotation(face_l, r)
-                    face_r = apply_rotation(face_r, r)
-                result.append(face_l + "2")
-                result.append(face_r + "2")
-                rotations.append('x')
-                rotations.append('x')
-            elif count == 3:  # M'
-                face_l = 'L'
-                face_r = 'R'
-                for r in rotations:
-                    face_l = apply_rotation(face_l, r)
-                    face_r = apply_rotation(face_r, r)
-                result.append(face_l)
-                result.append(face_r + "'")
-                rotations.append('x')
-
-        elif base == 'S':
-            if count == 1:  # S
-                face_f = 'F'
-                face_b = 'B'
-                for r in rotations:
-                    face_f = apply_rotation(face_f, r)
-                    face_b = apply_rotation(face_b, r)
-                result.append(face_f + "'")
-                result.append(face_b)
-                rotations.append('z')
-            elif count == 2:  # S2
-                face_f = 'F'
-                face_b = 'B'
-                for r in rotations:
-                    face_f = apply_rotation(face_f, r)
-                    face_b = apply_rotation(face_b, r)
-                result.append(face_f + "2")
-                result.append(face_b + "2")
-                rotations.append('z')
-                rotations.append('z')
-            elif count == 3:  # S'
-                face_f = 'F'
-                face_b = 'B'
-                for r in rotations:
-                    face_f = apply_rotation(face_f, r)
-                    face_b = apply_rotation(face_b, r)
-                result.append(face_f)
-                result.append(face_b + "'")
-                rotations.append('z')
-                rotations.append('z')
-                rotations.append('z')
-
-        elif base == 'E':
-            if count == 1:  # E
-                face_d = 'D'
-                face_u = 'U'
-                for r in rotations:
-                    face_d = apply_rotation(face_d, r)
-                    face_u = apply_rotation(face_u, r)
-                result.append(face_d + "'")
-                result.append(face_u)
-                rotations.append('y')
-            elif count == 2:  # E2
-                face_d = 'D'
-                face_u = 'U'
-                for r in rotations:
-                    face_d = apply_rotation(face_d, r)
-                    face_u = apply_rotation(face_u, r)
-                result.append(face_d + "2")
-                result.append(face_u + "2")
-                rotations.append('y')
-                rotations.append('y')
-            elif count == 3:  # E'
-                face_d = 'D'
-                face_u = 'U'
-                for r in rotations:
-                    face_d = apply_rotation(face_d, r)
-                    face_u = apply_rotation(face_u, r)
-                result.append(face_d)
-                result.append(face_u + "'")
-                rotations.append('y')
-                rotations.append('y')
-                rotations.append('y')
-
+            expanded.append(t)
         elif base in 'xyz':
             for _ in range(count % 4):
-                rotations.append(base)
+                expanded.append(base)
+        elif base in 'urfdlb':
+            seq = DOUBLE_MOVE_MAP[base].get(count % 4)
+            if seq:
+                expanded.extend(seq)
+        elif base in 'EMS':
+            seq = EMS_MOVE_MAP[base].get(count % 4)
+            if seq:
+                expanded.extend(seq)
 
-        else:
-            face = base
-            for r in rotations:
-                face = apply_rotation(face, r)
-            result.append(face + mod if mod else face)
+    result = list(expanded)
+    i = len(result) - 1
+    while i >= 0:
+        t = result[i]
+        if t in ('x', 'y', 'z'):
+            rot = t
+            for j in range(i + 1, len(result)):
+                m = result[j]
+                if m in ('x', 'y', 'z'):
+                    continue
+                face = m[0]
+                mod_j = m[1] if len(m) > 1 else ''
+                result[j] = apply_rotation(face, rot) + mod_j
+            del result[i]
+        i -= 1
 
     simplified = []
     i = 0
@@ -300,7 +177,7 @@ def convert_alg_to_basic(alg_str):
         move = result[i]
         base = move[0]
         mod = move[1] if len(move) > 1 else ''
-        total = {'': 1, "'": 3, '2': 2}.get(mod, 1)
+        total = MOD_COUNT.get(mod, 1)
 
         j = i + 1
         while j < len(result):
@@ -309,8 +186,7 @@ def convert_alg_to_basic(alg_str):
             if next_base != base:
                 break
             next_mod = next_move[1] if len(next_move) > 1 else ''
-            next_count = {'': 1, "'": 3, '2': 2}.get(next_mod, 1)
-            total = (total + next_count) % 4
+            total = (total + MOD_COUNT.get(next_mod, 1)) % 4
             j += 1
 
         if total == 1:
@@ -998,7 +874,7 @@ def solve_cross(state, perm_prun, flip_prun, perm_move, flip_move, max_depth=8):
     if perm_prun[perm0] == 0 and flip_prun[flip0] == 0:
         return []
     for depth in range(1, max_depth + 1):
-        print(f"DEBUG: cross searching depth={depth}")
+        _dbg(f"DEBUG: cross searching depth={depth}")
         path = []
         if _cross_ida(perm0, flip0, depth, -1, path, perm_prun, flip_prun, perm_move, flip_move):
             return path
@@ -1036,7 +912,7 @@ def solve_f2l_pair(state, pair_idx, pair_prun, pair_move, max_depth=10, protecte
         if _check_cross_intact(state) and all(pair_is_solved(state, pp) for pp in protected_pairs):
             return []
     for depth in range(1, max_depth + 1):
-        print(f"DEBUG: f2l pair {pair_idx} searching depth={depth}")
+        _dbg(f"DEBUG: f2l pair {pair_idx} searching depth={depth}")
         path = []
         if _f2l_ida(state, pair_idx, depth, -1, path, pair_prun, pair_move, protected_pairs):
             return path
@@ -1135,10 +1011,10 @@ def solve_f2l(state, pair_prun, pair_move):
     top_corners = set(state.cp[i] for i in range(4))
     top_edges = set(state.ep[i] for i in range(4))
     if top_corners != {0, 1, 2, 3}:
-        print(f"DEBUG: F2L failed - top corners={list(state.cp[:4])}, expected {{0,1,2,3}}")
+        _dbg(f"DEBUG: F2L failed - top corners={list(state.cp[:4])}, expected {{0,1,2,3}}")
         return None
     if top_edges != {0, 1, 2, 3}:
-        print(f"DEBUG: F2L failed - top edges={list(state.ep[:4])}, expected {{0,1,2,3}}")
+        _dbg(f"DEBUG: F2L failed - top edges={list(state.ep[:4])}, expected {{0,1,2,3}}")
         return None
 
     return full_moves, state
@@ -1176,15 +1052,19 @@ def build_pll_recognition():
     table = {}
     solved = CubieCube.solved()
     key_skip = (tuple(range(4)), tuple(range(4)))
+
     for name, alg in PLL_ALGS.items():
         basic_alg = convert_alg_to_basic(alg)
+        inv_alg = invert_alg(basic_alg)
+
         for auf in range(4):
             auf_str = {0: '', 1: 'U', 2: 'U2', 3: "U'"}[auf]
-            full_alg = (auf_str + ' ' + basic_alg).strip()
-            s = apply_alg_str(solved.copy(), full_alg)
+            full_inv = (auf_str + ' ' + inv_alg).strip()
+            s = apply_alg_str(solved.copy(), full_inv)
             cp_key = tuple(s.cp[i] for i in range(4))
             ep_key = tuple(s.ep[i] for i in range(4))
             table[(cp_key, ep_key)] = (name, basic_alg, auf)
+
     table[key_skip] = ('skip', '', 0)
     return table
 
@@ -1223,14 +1103,14 @@ def recognize_pll(state, pll_rec):
 def solve_oll(state, oll_rec):
     name, alg, auf, key = recognize_oll(state, oll_rec)
     if name is not None:
-        print(f"DEBUG: recognized OLL case={name} auf={auf} key={key}")
+        _dbg(f"DEBUG: recognized OLL case={name} auf={auf} key={key}")
         auf_str = {0: '', 1: 'U', 2: 'U2', 3: "U'"}.get(auf, '')
         full = (auf_str + ' ' + alg).strip() if name != 'skip' else ''
         if full:
             state = apply_alg_str(state, full)
         return full, state
 
-    print(f"DEBUG: OLL not recognized, state co={tuple(state.co[:4])} eo={tuple(state.eo[:4])} cp={tuple(state.cp[:4])} ep={tuple(state.ep[:4])}")
+    _dbg(f"DEBUG: OLL not recognized, state co={tuple(state.co[:4])} eo={tuple(state.eo[:4])} cp={tuple(state.cp[:4])} ep={tuple(state.ep[:4])}")
     return None, state
 
 
@@ -1324,48 +1204,48 @@ class CFOPSolver:
 
         cross_moves = solve_cross(state, PERM_PRUN, FLIP_PRUN, PERM_MOVE, FLIP_MOVE)
         if cross_moves is None:
-            print("DEBUG: cross failed")
+            _dbg("DEBUG: cross failed")
             return None
         cross_str = moves_to_str(cross_moves)
-        print(f"DEBUG: cross = {cross_str}")
+        _dbg(f"DEBUG: cross = {cross_str}")
         for m in cross_moves:
             state.apply_move_idx(m)
 
         f2l_result = solve_f2l(state, PAIR_PRUN, PAIR_MOVE)
         if f2l_result is None:
-            print("DEBUG: f2l failed")
+            _dbg("DEBUG: f2l failed")
             return None
         f2l_moves, state = f2l_result
         f2l_str = moves_to_str(f2l_moves)
-        print(f"DEBUG: f2l = {f2l_str}")
+        _dbg(f"DEBUG: f2l = {f2l_str}")
 
         oll_str, state = solve_oll(state, OLL_RECOGNITION)
         if oll_str is None:
-            print("DEBUG: oll failed")
+            _dbg("DEBUG: oll failed")
             f = state.to_facelet()
             u_pattern = ''.join('1' if f[i] == 'U' else '0' for i in range(9))
-            print(f"DEBUG: U-face pattern: {u_pattern}")
-            print(f"DEBUG: U-face colors: {f[:9]}")
+            _dbg(f"DEBUG: U-face pattern: {u_pattern}")
+            _dbg(f"DEBUG: U-face colors: {f[:9]}")
             for auf in range(4):
                 test = state.apply_u_rot(auf)
                 f2 = test.to_facelet()
                 p2 = ''.join('1' if f2[i] == 'U' else '0' for i in range(9))
-                print(f"DEBUG: auf={auf} pattern={p2} in_table={p2 in OLL_RECOGNITION}")
+                _dbg(f"DEBUG: auf={auf} pattern={p2} in_table={p2 in OLL_RECOGNITION}")
             return None
-        print(f"DEBUG: oll = {oll_str}")
+        _dbg(f"DEBUG: oll = {oll_str}")
 
         pll_str, state = solve_pll(state, PLL_RECOGNITION)
         if pll_str is None:
-            print("DEBUG: pll failed")
-            print(f"DEBUG: after oll cp={state.cp} co={state.co} ep={state.ep} eo={state.eo}")
+            _dbg("DEBUG: pll failed")
+            _dbg(f"DEBUG: after oll cp={state.cp} co={state.co} ep={state.ep} eo={state.eo}")
             for auf in range(4):
                 test = state.apply_u_rot(auf)
                 cp_key = tuple(test.cp[i] for i in range(4))
                 ep_key = tuple(test.ep[i] for i in range(4))
                 key = (cp_key, ep_key)
-                print(f"DEBUG: auf={auf} key={key} in_table={key in PLL_RECOGNITION}")
+                _dbg(f"DEBUG: auf={auf} key={key} in_table={key in PLL_RECOGNITION}")
             return None
-        print(f"DEBUG: pll = {pll_str}")
+        _dbg(f"DEBUG: pll = {pll_str}")
 
         solution_parts = [cross_str, f2l_str, oll_str, pll_str]
         solution = ' '.join(p for p in solution_parts if p)

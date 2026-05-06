@@ -240,10 +240,10 @@ pub async fn run(queue: Arc<Mutex<VecDeque<(u8, u8)>>>, cube_state: Arc<Mutex<pr
 
         let delay = {
             let q = queue.lock().unwrap();
-            if q.len() > 20 { 70 }
-            else if q.len() > 10 { 100 }
-            else if q.len() > 5 { 200 }
-            else if q.len() > 0 { 100 }
+            if q.len() > 20 { 50 }
+            else if q.len() > 10 { 50 }
+            else if q.len() > 5 { 50 }
+            else if q.len() > 0 { 50 }
             else { 100 }
         };
         Timer::after(Duration::from_millis(delay)).await;

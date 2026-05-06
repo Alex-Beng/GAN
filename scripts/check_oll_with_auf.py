@@ -12,12 +12,13 @@ print("="*70)
 all_patterns_with_auf = {}
 
 # for case_num in sorted(OLL_ALGS.keys()):
-for case_num in sorted([39,]):
+for case_num in sorted([18, ]):
     alg = OLL_ALGS[case_num]
-    # alg = "y' f'"
+    alg = "y' M' U"
     print(alg)
     basic_alg = convert_alg_to_basic(alg)
     print(basic_alg)
+    exit()
     inv = invert_alg(basic_alg)
     s = apply_alg_str(solved.copy(), inv)
     
