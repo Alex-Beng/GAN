@@ -876,8 +876,6 @@ def build_cross_prun(perm_move, flip_move):
     while queue:
         idx = queue.popleft()
         d = perm_prun[idx]
-        if d >= 5:
-            continue
         for m in range(18):
             nxt = perm_move[m][idx]
             if perm_prun[nxt] == 0xff:
@@ -890,8 +888,6 @@ def build_cross_prun(perm_move, flip_move):
     while queue:
         idx = queue.popleft()
         d = flip_prun[idx]
-        if d >= 6:
-            continue
         for m in range(18):
             nxt = flip_move[m][idx]
             if flip_prun[nxt] == 0xff:
@@ -1002,6 +998,7 @@ def solve_cross(state, perm_prun, flip_prun, perm_move, flip_move, max_depth=8):
     if perm_prun[perm0] == 0 and flip_prun[flip0] == 0:
         return []
     for depth in range(1, max_depth + 1):
+        print(f"DEBUG: cross searching depth={depth}")
         path = []
         if _cross_ida(perm0, flip0, depth, -1, path, perm_prun, flip_prun, perm_move, flip_move):
             return path
@@ -1039,6 +1036,7 @@ def solve_f2l_pair(state, pair_idx, pair_prun, pair_move, max_depth=10, protecte
         if _check_cross_intact(state) and all(pair_is_solved(state, pp) for pp in protected_pairs):
             return []
     for depth in range(1, max_depth + 1):
+        print(f"DEBUG: f2l pair {pair_idx} searching depth={depth}")
         path = []
         if _f2l_ida(state, pair_idx, depth, -1, path, pair_prun, pair_move, protected_pairs):
             return path
