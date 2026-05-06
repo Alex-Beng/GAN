@@ -68,18 +68,20 @@ def kociemba_to_rubik_cube(k_facelets):
 
 def solve_cfop(facelets):
     try:
-        from rubik.cube import Cube
-        from rubik.solve import Solver
+        from cfop_solver import CFOPSolver
     except ImportError:
-        print("rubik-cube not installed. Run: pip install rubik-cube")
+        print("cfop_solver.py not found in scripts/")
         sys.exit(1)
-    rs_cube = kociemba_to_rubik_solver(facelets)
-    print(f"rs cube: {rs_cube}")
-    rc_str = kociemba_to_rubik_cube(facelets)
-    cube = Cube(rc_str)
-    solver = Solver(cube)
-    solver.solve()
-    return solver.moves
+    solver = CFOPSolver()
+    result = solver.solve(facelets)
+    if result is None:
+        print("No CFOP solution found")
+        sys.exit(1)
+    print(f"  Cross: {result['cross']}")
+    print(f"  F2L: {result['f2l']}")
+    print(f"  OLL: {result['oll']}")
+    print(f"  PLL: {result['pll']}")
+    return result['solution']
 
 def solve_kociemba(facelets):
     try:
