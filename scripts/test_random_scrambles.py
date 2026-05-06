@@ -101,10 +101,11 @@ def test_random_scrambles(num_tests=10, scramble_length=20, profile=False):
             print(f"Status: SUCCESS")
             print(f"Time: {elapsed:.3f}s")
             print(f"Moves: {move_count}")
-            print(f"Cross: {len(result['cross'].split()) if result['cross'] else 0}")
-            print(f"F2L: {len(result['f2l'].split()) if result['f2l'] else 0}")
-            print(f"OLL: {len(result['oll'].split()) if result['oll'] else 0}")
-            print(f"PLL: {len(result['pll'].split()) if result['pll'] else 0}")
+            print(f"Cross ({len(result['cross'].split()) if result['cross'] else 0}): {result['cross'] or '-'}")
+            print(f"F2L   ({len(result['f2l'].split()) if result['f2l'] else 0}): {result['f2l'] or '-'}")
+            print(f"OLL   ({len(result['oll'].split()) if result['oll'] else 0}): {result['oll'] or '-'}")
+            print(f"PLL   ({len(result['pll'].split()) if result['pll'] else 0}): {result['pll'] or '-'}")
+            print(f"Full  ({move_count}): {result['solution']}")
     
     # Summary
     print("\n" + "=" * 70)
