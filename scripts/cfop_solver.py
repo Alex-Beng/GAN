@@ -533,6 +533,7 @@ PAIR_MOVE = None
 PAIR_PRUN = None
 MACRO_PAIR_MOVE = None
 MACRO_PAIR_PRUN = None
+ALLL_RECOGNITION = None
 
 OLL_ALGS = {
     1: "R U2 R2 F R F' U2 R' F R F'",
@@ -617,6 +618,14 @@ PLL_ALGS = {
     'Y': "F R U' R' U' R U R' F' R U R' U' R' F R F'",
     'Z': "M' U M2 U M2 U M' U2 M2",
 }
+
+# ALLL (1-look Last Layer) formula set: OLL + PLL algorithms combined
+# Each formula is a standalone last-layer solver
+ALLL_ALGS = {}
+for k, v in OLL_ALGS.items():
+    ALLL_ALGS[f"OLL_{k}"] = v
+for k, v in PLL_ALGS.items():
+    ALLL_ALGS[f"PLL_{k}"] = v
 
 def expand_rotations(tokens):
     return tokens
@@ -1250,6 +1259,37 @@ def build_pll_recognition():
     return table
 
 
+def build_alll_recognition():
+    """Build ALLL (1-look Last Layer) recognition table using ALLL_ALGS.
+    Each formula is treated independently as a last-layer solver.
+    Key = (cp, co, ep, eo) tuples for top-layer pieces (with 4 AUF variations).
+    For each alg, apply its inverse to solved state and record the resulting state."""
+    table = {}
+    solved = CubieCube.solved()
+    
+    for name, alg in ALLL_ALGS.items():
+        basic_alg = convert_alg_to_basic(alg)
+        for auf in range(4):
+            auf_str = {0: '', 1: 'U', 2: 'U2', 3: "U'"}[auf]
+            inv_alg = invert_alg(basic_alg)
+            full_inv = (auf_str + ' ' + inv_alg).strip()
+            s = apply_alg_str(solved.copy(), full_inv)
+            cp_key = tuple(s.cp[i] for i in range(4))
+            co_key = tuple(s.co[i] for i in range(4))
+            ep_key = tuple(s.ep[i] for i in range(4))
+            eo_key = tuple(s.eo[i] for i in range(4))
+            all_key = (cp_key, co_key, ep_key, eo_key)
+            full_alg = (auf_str + ' ' + basic_alg).strip()
+            if all_key not in table:
+                table[all_key] = full_alg
+    
+    # Add fully solved state
+    solved_key = (tuple(range(4)), (0,0,0,0), tuple(range(4)), (0,0,0,0))
+    table[solved_key] = ''
+    
+    return table
+
+
 def recognize_oll(state: 'CubieCube', oll_rec):
     # Try all 4 AUF rotations
     for auf in range(4):
@@ -1321,7 +1361,7 @@ _tables_initialized = False
 
 
 def init_tables():
-    global PERM_MOVE, FLIP_MOVE, PERM_PRUN, FLIP_PRUN, PAIR_MOVE, PAIR_PRUN, MACRO_PAIR_MOVE, MACRO_PAIR_PRUN, OLL_RECOGNITION, PLL_RECOGNITION, _tables_initialized
+    global PERM_MOVE, FLIP_MOVE, PERM_PRUN, FLIP_PRUN, PAIR_MOVE, PAIR_PRUN, MACRO_PAIR_MOVE, MACRO_PAIR_PRUN, OLL_RECOGNITION, PLL_RECOGNITION, ALLL_RECOGNITION, _tables_initialized
     if _tables_initialized:
         return
     if os.path.exists(CACHE_FILE):
@@ -1337,6 +1377,9 @@ def init_tables():
         MACRO_PAIR_PRUN = tables.get('macro_pair_prun', None)
         OLL_RECOGNITION = tables['oll_rec']
         PLL_RECOGNITION = tables['pll_rec']
+        ALLL_RECOGNITION = tables.get('alll_rec', None)
+        if ALLL_RECOGNITION is None:
+            ALLL_RECOGNITION = build_alll_recognition()
     else:
         print("Building CFOP tables (first run)...", flush=True)
         perm_move, flip_move = build_cross_move_tables()
@@ -1357,6 +1400,8 @@ def init_tables():
         pll_rec = build_pll_recognition()
         OLL_RECOGNITION = oll_rec
         PLL_RECOGNITION = pll_rec
+        alll_rec = build_alll_recognition()
+        ALLL_RECOGNITION = alll_rec
         tables = {
             'perm_move': perm_move,
             'flip_move': flip_move,
@@ -1368,6 +1413,7 @@ def init_tables():
             'macro_pair_prun': macro_pair_prun,
             'oll_rec': oll_rec,
             'pll_rec': pll_rec,
+            'alll_rec': alll_rec,
         }
         with open(CACHE_FILE, 'wb') as f:
             pickle.dump(tables, f)
@@ -1438,44 +1484,95 @@ class CFOPSolver:
         f2l_str = moves_to_str(f2l_moves)
         _dbg(f"DEBUG: f2l = {f2l_str}")
 
-        oll_str, state = solve_oll(state, OLL_RECOGNITION)
-        if oll_str is None:
-            _dbg("DEBUG: oll failed")
-            f = state.to_facelet()
-            u_pattern = ''.join('1' if f[i] == 'U' else '0' for i in range(9))
-            _dbg(f"DEBUG: U-face pattern: {u_pattern}")
-            _dbg(f"DEBUG: U-face colors: {f[:9]}")
-            for auf in range(4):
-                test = state.apply_u_rot(auf)
-                f2 = test.to_facelet()
-                p2 = ''.join('1' if f2[i] == 'U' else '0' for i in range(9))
-                _dbg(f"DEBUG: auf={auf} pattern={p2} in_table={p2 in OLL_RECOGNITION}")
-            return None
-        _dbg(f"DEBUG: oll = {oll_str}")
-
-        pll_str, state = solve_pll(state, PLL_RECOGNITION)
-        if pll_str is None:
-            _dbg("DEBUG: pll failed")
-            _dbg(f"DEBUG: after oll cp={state.cp} co={state.co} ep={state.ep} eo={state.eo}")
+        # Try ALLL (1-look Last Layer) first
+        alll_str = ''
+        oll_str = ''
+        pll_str = ''
+        alll_found = False
+        
+        if ALLL_RECOGNITION:
             for auf in range(4):
                 test = state.apply_u_rot(auf)
                 cp_key = tuple(test.cp[i] for i in range(4))
+                co_key = tuple(test.co[i] for i in range(4))
                 ep_key = tuple(test.ep[i] for i in range(4))
-                key = (cp_key, ep_key)
-                _dbg(f"DEBUG: auf={auf} key={key} in_table={key in PLL_RECOGNITION}")
-            return None
-        _dbg(f"DEBUG: pll = {pll_str}")
+                eo_key = tuple(test.eo[i] for i in range(4))
+                all_key = (cp_key, co_key, ep_key, eo_key)
+                if all_key in ALLL_RECOGNITION:
+                    alll_alg = ALLL_RECOGNITION[all_key]
+                    auf_str = {0: '', 1: 'U', 2: 'U2', 3: "U'"}[auf]
+                    alll_str = (auf_str + ' ' + alll_alg).strip()
+                    if alll_str:
+                        state = apply_alg_str(state, alll_str)
+                    _dbg(f"DEBUG: ALLL found, auf={auf}, alg={alll_str}")
+                    alll_found = True
+                    break
+        
+        if not alll_found:
+            # Fall back to OLL + PLL
+            _dbg("DEBUG: ALLL not found, falling back to OLL+PLL")
+            oll_str, state = solve_oll(state, OLL_RECOGNITION)
+            if oll_str is None:
+                _dbg("DEBUG: oll failed")
+                f = state.to_facelet()
+                u_pattern = ''.join('1' if f[i] == 'U' else '0' for i in range(9))
+                _dbg(f"DEBUG: U-face pattern: {u_pattern}")
+                _dbg(f"DEBUG: U-face colors: {f[:9]}")
+                for auf in range(4):
+                    test = state.apply_u_rot(auf)
+                    f2 = test.to_facelet()
+                    p2 = ''.join('1' if f2[i] == 'U' else '0' for i in range(9))
+                    _dbg(f"DEBUG: auf={auf} pattern={p2} in_table={p2 in OLL_RECOGNITION}")
+                return None
+            _dbg(f"DEBUG: oll = {oll_str}")
 
-        solution_parts = [cross_str, f2l_str, oll_str, pll_str]
+            pll_str, state = solve_pll(state, PLL_RECOGNITION)
+            if pll_str is None:
+                _dbg("DEBUG: pll failed")
+                _dbg(f"DEBUG: after oll cp={state.cp} co={state.co} ep={state.ep} eo={state.eo}")
+                for auf in range(4):
+                    test = state.apply_u_rot(auf)
+                    cp_key = tuple(test.cp[i] for i in range(4))
+                    ep_key = tuple(test.ep[i] for i in range(4))
+                    key = (cp_key, ep_key)
+                    _dbg(f"DEBUG: auf={auf} key={key} in_table={key in PLL_RECOGNITION}")
+                return None
+            _dbg(f"DEBUG: pll = {pll_str}")
+
+        # Verify final state is solved (with possible AUF adjustment)
+        if not state.is_solved():
+            for post_auf in range(1, 4):
+                test = state.apply_u_rot(post_auf)
+                if test.is_solved():
+                    auf_name = {1: 'U', 2: 'U2', 3: "U'"}[post_auf]
+                    if alll_found:
+                        alll_str = (alll_str + ' ' + auf_name).strip()
+                    else:
+                        pll_str = (pll_str + ' ' + auf_name).strip()
+                    state = apply_alg_str(state, auf_name)
+                    break
+
+        solution_parts = [cross_str, f2l_str]
+        if alll_found:
+            solution_parts.append(alll_str)
+        else:
+            solution_parts.extend([oll_str, pll_str])
         solution = ' '.join(p for p in solution_parts if p)
 
-        return {
+        result = {
             'cross': cross_str,
             'f2l': f2l_str,
-            'oll': oll_str,
-            'pll': pll_str,
             'solution': solution,
         }
+        if alll_found:
+            result['alll'] = alll_str
+            result['oll'] = ''
+            result['pll'] = ''
+        else:
+            result['alll'] = ''
+            result['oll'] = oll_str
+            result['pll'] = pll_str
+        return result
 
 
 def main():

@@ -3,7 +3,10 @@ import time
 import cProfile
 import pstats
 from io import StringIO
+import cfop_solver
 from cfop_solver import CFOPSolver, CubieCube, apply_alg_str
+
+# cfop_solver.DEBUG = True
 
 # WCA official moves for scramble generation
 MOVES = ['U', "U'", 'U2', 'R', "R'", 'R2', 'F', "F'", 'F2', 
@@ -54,9 +57,16 @@ def test_random_scrambles(num_tests=10, scramble_length=20, profile=False):
     results = {
         'success': 0,
         'failed': 0,
+        'alll_hit': 0,
+        'alll_total': 0,
         'total_time': 0,
         'total_moves': 0,
-        'failed_scrambles': []
+        'min_time': float('inf'),
+        'max_time': 0,
+        'min_moves': float('inf'),
+        'max_moves': 0,
+        'failed_scrambles': [],
+        'time_records': []
     }
     
     for i in range(num_tests):
@@ -93,18 +103,31 @@ def test_random_scrambles(num_tests=10, scramble_length=20, profile=False):
         else:
             results['success'] += 1
             results['total_time'] += elapsed
+            results['min_time'] = min(results['min_time'], elapsed)
+            results['max_time'] = max(results['max_time'], elapsed)
             
             solution_moves = result['solution'].split()
             move_count = len(solution_moves)
             results['total_moves'] += move_count
+            results['min_moves'] = min(results['min_moves'], move_count)
+            results['max_moves'] = max(results['max_moves'], move_count)
+            results['time_records'].append((elapsed, scramble, move_count))
             
+            results['alll_total'] += 1
+            alll_hit = bool(result.get('alll'))
+            if alll_hit:
+                results['alll_hit'] += 1
             print(f"Status: SUCCESS")
             print(f"Time: {elapsed:.3f}s")
             print(f"Moves: {move_count}")
+            print(f"ALLL  : {'HIT' if alll_hit else 'MISS'}")
             print(f"Cross ({len(result['cross'].split()) if result['cross'] else 0}): {result['cross'] or '-'}")
             print(f"F2L   ({len(result['f2l'].split()) if result['f2l'] else 0}): {result['f2l'] or '-'}")
-            print(f"OLL   ({len(result['oll'].split()) if result['oll'] else 0}): {result['oll'] or '-'}")
-            print(f"PLL   ({len(result['pll'].split()) if result['pll'] else 0}): {result['pll'] or '-'}")
+            if alll_hit:
+                print(f"ALLL  ({len(result['alll'].split()) if result['alll'] else 0}): {result['alll'] or '-'}")
+            else:
+                print(f"OLL   ({len(result['oll'].split()) if result['oll'] else 0}): {result['oll'] or '-'}")
+                print(f"PLL   ({len(result['pll'].split()) if result['pll'] else 0}): {result['pll'] or '-'}")
             print(f"Full  ({move_count}): {result['solution']}")
     
     # Summary
@@ -118,8 +141,17 @@ def test_random_scrambles(num_tests=10, scramble_length=20, profile=False):
     if results['success'] > 0:
         avg_time = results['total_time'] / results['success']
         avg_moves = results['total_moves'] / results['success']
-        print(f"Average time: {avg_time:.3f}s")
-        print(f"Average moves: {avg_moves:.1f}")
+        print(f"Average time: {avg_time:.3f}s (min={results['min_time']:.3f}s, max={results['max_time']:.3f}s)")
+        print(f"Average moves: {avg_moves:.1f} (min={results['min_moves']}, max={results['max_moves']})")
+        if results['alll_total'] > 0:
+            alll_rate = results['alll_hit'] / results['alll_total'] * 100
+            print(f"ALLL hit rate: {results['alll_hit']}/{results['alll_total']} ({alll_rate:.1f}%)")
+        
+        # Top 10 slowest
+        top10 = sorted(results['time_records'], reverse=True)[:10]
+        print(f"\nTop 10 slowest solves:")
+        for rank, (t, scr, mc) in enumerate(top10, 1):
+            print(f"  #{rank}: {t:.3f}s, {mc} moves, scramble: {scr}")
     
     if results['failed'] > 0:
         print(f"\nFailed scrambles:")
