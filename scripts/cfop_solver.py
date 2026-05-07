@@ -2,6 +2,7 @@ import os
 import pickle
 from collections import deque
 import random
+from ALLL import EX_ALLLS
 
 DEBUG = False
 
@@ -626,6 +627,7 @@ for k, v in OLL_ALGS.items():
     ALLL_ALGS[f"OLL_{k}"] = v
 for k, v in PLL_ALGS.items():
     ALLL_ALGS[f"PLL_{k}"] = v
+ALLL_ALGS.update(EX_ALLLS)
 
 def expand_rotations(tokens):
     return tokens
