@@ -1,6 +1,7 @@
 import os
 import pickle
 from collections import deque
+import random
 
 DEBUG = False
 
@@ -208,6 +209,37 @@ F2L_PAIRS = [
 
 F2L_MOVE_INDICES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 15, 16, 17]
 
+# F2L macro moves: triggers + U-layer turns
+# Each trigger is a 3-move sequence (X U X', X U' X', X' U X, X' U' X)
+# 4 side faces × 4 triggers = 16 triggers + 3 U-layer turns = 19 macro moves
+# This reduces search depth by ~3x while having similar branching factor
+F2L_MACRO_MODE = True  # Switch to enable macro-based F2L search
+
+# Move indices: U=0, U2=1, U'=2, R=3, R2=4, R'=5, F=6, F2=7, F'=8, L=12, L2=13, L'=14, B=15, B2=16, B'=17
+F2L_TRIGGERS = [
+    # R triggers: R U R', R U' R', R' U R, R' U' R
+    [3, 0, 5], [3, 2, 5], [5, 0, 3], [5, 2, 3],
+    # F triggers: F U F', F U' F', F' U F, F' U' F
+    [6, 0, 8], [6, 2, 8], [8, 0, 6], [8, 2, 6],
+    # L triggers: L U L', L U' L', L' U L, L' U' L
+    [12, 0, 14], [12, 2, 14], [14, 0, 12], [14, 2, 12],
+    # B triggers: B U B', B U' B', B' U B, B' U' B
+    [15, 0, 17], [15, 2, 17], [17, 0, 15], [17, 2, 15],
+]
+F2L_U_MOVES = [[0], [1], [2]]  # U, U2, U'
+F2L_D_MOVES = [[9], [11], [10]]  # D, D', D2 (for keyhole F2L)
+F2L_MACRO_MOVES = F2L_TRIGGERS + F2L_U_MOVES + F2L_D_MOVES  # 22 macro operations
+N_F2L_MACROS = len(F2L_MACRO_MOVES)
+
+F2L_MACRO_NAMES = [
+    "RUR'", "RU'R'", "R'UR", "R'U'R",
+    "FUF'", "FU'F'", "F'UF", "F'U'F",
+    "LUL'", "LU'L'", "L'UL", "L'U'L",
+    "BUB'", "BU'B'", "B'UB", "B'U'B",
+    "U", "U2", "U'",
+    "D", "D'", "D2",
+]
+
 OPPOSITE_FACE = {0: 3, 3: 0, 1: 4, 4: 1, 2: 5, 5: 2}
 
 
@@ -259,6 +291,21 @@ class CubieCube:
             self.apply_cw(face)
             self.apply_cw(face)
         else:  # turn_type == 2: CCW
+            self.apply_cw(face)
+            self.apply_cw(face)
+            self.apply_cw(face)
+
+    def apply_move_idx_inv(self, idx):
+        """Apply inverse of move idx: CW↔CCW, half-turn is self-inverse."""
+        face = idx // 3
+        turn_type = idx % 3
+        inv_turn = {0: 2, 1: 1, 2: 0}[turn_type]
+        if inv_turn == 0:
+            self.apply_cw(face)
+        elif inv_turn == 1:
+            self.apply_cw(face)
+            self.apply_cw(face)
+        else:
             self.apply_cw(face)
             self.apply_cw(face)
             self.apply_cw(face)
@@ -484,6 +531,8 @@ FLIP_PRUN = None
 
 PAIR_MOVE = None
 PAIR_PRUN = None
+MACRO_PAIR_MOVE = None
+MACRO_PAIR_PRUN = None
 
 OLL_ALGS = {
     1: "R U2 R2 F R F' U2 R' F R F'",
@@ -845,7 +894,7 @@ def build_pair_prun(pair_move):
         while queue:
             idx = queue.popleft()
             d = pair_prun[pair_idx][idx]
-            if d >= 8:
+            if d > 11:
                 continue
             for mi in range(15):
                 nxt = pair_move[pair_idx][mi][idx]
@@ -853,6 +902,108 @@ def build_pair_prun(pair_move):
                     pair_prun[pair_idx][nxt] = d + 1
                     queue.append(nxt)
     return pair_prun
+
+
+def build_macro_pair_move_tables():
+    """Build move table for macro operations (triggers + U-layer turns).
+    Each macro maps pair_coord -> new_pair_coord.
+    Triggers are 3-move sequences applied sequentially."""
+    macro_move = [[[0] * 576 for _ in range(N_F2L_MACROS)] for _ in range(4)]
+    for pair_idx in range(4):
+        for macro_idx, macro_seq in enumerate(F2L_MACRO_MOVES):
+            for pc in range(576):
+                s = _pair_to_cube(pc, pair_idx)
+                for m in macro_seq:
+                    s.apply_move_idx(m)
+                macro_move[pair_idx][macro_idx][pc] = get_pair_coord(s, pair_idx)
+    return macro_move
+
+
+def build_macro_pair_prun(macro_move):
+    """Build pruning table for macro operations.
+    Each entry gives the minimum number of macro operations to solve the pair."""
+    macro_prun = [bytearray([0xff] * 576) for _ in range(4)]
+    for pair_idx in range(4):
+        solved = pair_solved_coord(pair_idx)
+        macro_prun[pair_idx][solved] = 0
+        queue = deque([solved])
+        while queue:
+            idx = queue.popleft()
+            d = macro_prun[pair_idx][idx]
+            if d >= 15:
+                continue
+            for macro_idx in range(N_F2L_MACROS):
+                nxt = macro_move[pair_idx][macro_idx][idx]
+                if macro_prun[pair_idx][nxt] == 0xff:
+                    macro_prun[pair_idx][nxt] = d + 1
+                    queue.append(nxt)
+    return macro_prun
+
+
+def _f2l_macro_ida(state, pair_idx, remaining, last_macro_face, path, macro_prun, protected_pairs):
+    """IDA* search using macro operations (triggers + U/D-layer turns).
+    remaining: number of macro operations left.
+    last_macro_face: the primary face of the last macro (for pruning)."""
+    global _f2l_nodes
+    _f2l_nodes += 1
+    h = macro_prun[pair_idx][get_pair_coord(state, pair_idx)]
+    if h > remaining:
+        return False
+    if remaining == 0:
+        if not pair_is_solved(state, pair_idx):
+            return False
+        for pp in protected_pairs:
+            if not pair_is_solved(state, pp):
+                return False
+        if not _check_cross_intact(state):
+            return False
+        return True
+    for macro_idx, macro_seq in enumerate(F2L_MACRO_MOVES):
+        # Determine the primary face for pruning
+        if len(macro_seq) == 3:  # trigger: first move's face
+            macro_face = macro_seq[0] // 3
+        elif macro_seq[0] // 3 == 0:  # U-layer single move
+            macro_face = 0
+        else:  # D-layer single move (D, D', D2)
+            macro_face = 3  # D face index
+        # Pruning: skip same face, or opposite after lower-index face
+        if macro_face == last_macro_face:
+            continue
+        if macro_face == OPPOSITE_FACE.get(last_macro_face, -1) and macro_face < last_macro_face:
+            continue
+        # Apply the macro sequence
+        ns = state.copy()
+        for m in macro_seq:
+            ns.apply_move_idx(m)
+        path.append(macro_idx)
+        if _f2l_macro_ida(ns, pair_idx, remaining - 1, macro_face, path, macro_prun, protected_pairs):
+            return True
+        path.pop()
+    return False
+
+
+def solve_f2l_pair_macro(state, pair_idx, macro_prun, max_depth=8, protected_pairs=None):
+    """Solve a single F2L pair using macro operations.
+    max_depth is in macro operations (each trigger = 3 moves, U = 1 move)."""
+    if protected_pairs is None:
+        protected_pairs = set()
+    if pair_is_solved(state, pair_idx):
+        if _check_cross_intact(state) and all(pair_is_solved(state, pp) for pp in protected_pairs):
+            return []
+    global _f2l_nodes
+    for depth in range(1, max_depth + 1):
+        _f2l_nodes = 0
+        _dbg(f"DEBUG: f2l pair {pair_idx} macro searching depth={depth}")
+        path = []
+        if _f2l_macro_ida(state, pair_idx, depth, -1, path, macro_prun, protected_pairs):
+            _dbg(f"DEBUG: f2l pair {pair_idx} macro found at depth={depth}, nodes={_f2l_nodes}")
+            # Convert macro indices to actual move sequences
+            moves = []
+            for macro_idx in path:
+                moves.extend(F2L_MACRO_MOVES[macro_idx])
+            return moves
+        _dbg(f"DEBUG: f2l pair {pair_idx} macro depth={depth} exhausted, nodes={_f2l_nodes}")
+    return None
 
 
 def get_next_moves(all_moves, last_face):
@@ -900,7 +1051,7 @@ def _cross_ida(perm, flip, remaining, last_face, path, perm_prun, flip_prun, per
 
 def _check_cross_intact(state):
     for e in [4, 5, 6, 7]:
-        if state.ep.index(e) != e or state.eo[state.ep.index(e)] != 0:
+        if state.ep[e] != e or state.eo[e] != 0:
             return False
     return True
 
@@ -911,15 +1062,23 @@ def solve_f2l_pair(state, pair_idx, pair_prun, pair_move, max_depth=10, protecte
     if pair_is_solved(state, pair_idx):
         if _check_cross_intact(state) and all(pair_is_solved(state, pp) for pp in protected_pairs):
             return []
+    global _f2l_nodes
     for depth in range(1, max_depth + 1):
+        _f2l_nodes = 0
         _dbg(f"DEBUG: f2l pair {pair_idx} searching depth={depth}")
         path = []
         if _f2l_ida(state, pair_idx, depth, -1, path, pair_prun, pair_move, protected_pairs):
+            _dbg(f"DEBUG: f2l pair {pair_idx} found at depth={depth}, nodes={_f2l_nodes}")
             return path
+        _dbg(f"DEBUG: f2l pair {pair_idx} depth={depth} exhausted, nodes={_f2l_nodes}")
     return None
 
 
-def _f2l_ida(state, pair_idx, remaining, last_face, path, pair_prun, pair_move, protected_pairs):
+_f2l_nodes = 0
+
+def _f2l_ida(state: 'CubieCube', pair_idx, remaining, last_face, path, pair_prun, pair_move, protected_pairs):
+    global _f2l_nodes
+    _f2l_nodes += 1
     h = pair_prun[pair_idx][get_pair_coord(state, pair_idx)]
     if h > remaining:
         return False
@@ -942,79 +1101,101 @@ def _f2l_ida(state, pair_idx, remaining, last_face, path, pair_prun, pair_move, 
     return False
 
 
-def solve_f2l(state, pair_prun, pair_move):
+F2L_GREEDY_MODE = False  # If True, solve pairs sorted by heuristic (closest first)
+F2L_RANDOM_MODE = False  # If True, solve pairs in random order (for speedup)
+
+def solve_f2l(state: 'CubieCube', pair_prun, pair_move):
+    if F2L_MACRO_MODE:
+        return _solve_f2l_macro(state)
+    return _solve_f2l_single(state, pair_prun, pair_move)
+
+
+def _solve_f2l_single(state, pair_prun, pair_move):
+    """Original F2L solver using single-move IDA*."""
     full_moves = []
     solved_pairs = set()
     for i in range(4):
         if pair_is_solved(state, i):
             solved_pairs.add(i)
+            _dbg(f"DEBUG: pair {i} already solved")
+    
     for step in range(4):
         remaining = [i for i in range(4) if i not in solved_pairs]
         if not remaining:
             break
-        # Try each remaining pair with U adjustments
-        best_path = None
-        best_pair = None
-        best_prefix = []
+        
+        if F2L_GREEDY_MODE:
+            heuristic = [(pair_prun[pidx][get_pair_coord(state, pidx)], pidx) for pidx in remaining]
+            heuristic.sort()
+            _dbg(f"DEBUG: remaining pairs heuristics: {[(h, p) for h, p in heuristic]}")
+        elif F2L_RANDOM_MODE:
+            random.shuffle(remaining)
+            heuristic = [(0, pidx) for pidx in remaining]
+        else:
+            heuristic = [(0, pidx) for pidx in remaining]
+        
         found = False
-        for pair_idx in remaining:
-            for auf in range(4):
-                test_state = state.apply_u_rot(auf)
-                # Check if this pair is already solved after U rotation
-                if pair_is_solved(test_state, pair_idx):
-                    best_path = []
-                    best_pair = pair_idx
-                    best_prefix = [0] * auf if auf > 0 else []
-                    found = True
-                    break
-                # Try to solve with increasing depth, but cap at 8 for speed
-                path = solve_f2l_pair(test_state, pair_idx, pair_prun, pair_move, max_depth=8, protected_pairs=solved_pairs)
-                if path is not None:
-                    best_path = path
-                    best_pair = pair_idx
-                    best_prefix = [0] * auf if auf > 0 else []
-                    found = True
-                    break
-            if found:
+        for _, pair_idx in heuristic:
+            _dbg(f"DEBUG: solving F2L pair {pair_idx}")
+            path = solve_f2l_pair(state, pair_idx, pair_prun, pair_move, max_depth=11, protected_pairs=solved_pairs)
+            if path is not None:
+                full_moves.extend(path)
+                for m in path:
+                    state.apply_move_idx(m)
+                _dbg(f"DEBUG: pair {pair_idx} solved with {len(path)} moves")
+                if not pair_is_solved(state, pair_idx):
+                    return None
+                solved_pairs.add(pair_idx)
+                found = True
                 break
         
         if not found:
-            # Fallback: try deeper search for first remaining pair
-            pair_idx = remaining[0]
-            for auf in range(4):
-                test_state = state.apply_u_rot(auf)
-                path = solve_f2l_pair(test_state, pair_idx, pair_prun, pair_move, max_depth=10, protected_pairs=solved_pairs)
-                if path is not None:
-                    best_path = path
-                    best_pair = pair_idx
-                    best_prefix = [0] * auf if auf > 0 else []
-                    found = True
-                    break
-        
-        if not found:
+            _dbg(f"DEBUG: F2L failed at step {step}")
             return None
-        
-        full_moves.extend(best_prefix)
-        full_moves.extend(best_path)
-        for m in best_prefix + best_path:
-            state.apply_move_idx(m)
-        
-        if not pair_is_solved(state, best_pair):
-            return None
-        for pp in solved_pairs:
-            if not pair_is_solved(state, pp):
-                return None
-        solved_pairs.add(best_pair)
 
-    # Verify F2L is complete: top 4 corners (0,1,2,3) should be in top positions with any orientation
-    # and top 4 edges (0,1,2,3) should be in top positions with any orientation
+    # Verify F2L is complete
     top_corners = set(state.cp[i] for i in range(4))
     top_edges = set(state.ep[i] for i in range(4))
-    if top_corners != {0, 1, 2, 3}:
-        _dbg(f"DEBUG: F2L failed - top corners={list(state.cp[:4])}, expected {{0,1,2,3}}")
+    if top_corners != {0, 1, 2, 3} or top_edges != {0, 1, 2, 3}:
         return None
-    if top_edges != {0, 1, 2, 3}:
-        _dbg(f"DEBUG: F2L failed - top edges={list(state.ep[:4])}, expected {{0,1,2,3}}")
+
+    return full_moves, state
+
+
+def _solve_f2l_macro(state):
+    """F2L solver using macro operations (triggers + U/D-layer turns)."""
+    macro_prun = MACRO_PAIR_PRUN
+    if macro_prun is None:
+        _dbg("DEBUG: macro pruning tables not available, falling back to single-move mode")
+        return _solve_f2l_single(state, PAIR_PRUN, PAIR_MOVE)
+    
+    full_moves = []
+    solved_pairs = set()
+    for i in range(4):
+        if pair_is_solved(state, i):
+            solved_pairs.add(i)
+            _dbg(f"DEBUG: pair {i} already solved")
+    
+    for pair_idx in range(4):
+        if pair_idx in solved_pairs:
+            continue
+        _dbg(f"DEBUG: solving F2L pair {pair_idx} (macro mode)")
+        moves = solve_f2l_pair_macro(state, pair_idx, macro_prun, max_depth=8, protected_pairs=solved_pairs)
+        if moves is None:
+            _dbg(f"DEBUG: F2L pair {pair_idx} FAILED (macro mode)")
+            return None
+        full_moves.extend(moves)
+        for m in moves:
+            state.apply_move_idx(m)
+        _dbg(f"DEBUG: pair {pair_idx} solved with {len(moves)} moves (macro mode)")
+        if not pair_is_solved(state, pair_idx):
+            return None
+        solved_pairs.add(pair_idx)
+
+    # Verify F2L is complete
+    top_corners = set(state.cp[i] for i in range(4))
+    top_edges = set(state.ep[i] for i in range(4))
+    if top_corners != {0, 1, 2, 3} or top_edges != {0, 1, 2, 3}:
         return None
 
     return full_moves, state
@@ -1069,7 +1250,7 @@ def build_pll_recognition():
     return table
 
 
-def recognize_oll(state, oll_rec):
+def recognize_oll(state: 'CubieCube', oll_rec):
     # Try all 4 AUF rotations
     for auf in range(4):
         test = state.apply_u_rot(auf)
@@ -1086,7 +1267,7 @@ def recognize_oll(state, oll_rec):
     return None, None, 0, None
 
 
-def recognize_pll(state, pll_rec):
+def recognize_pll(state: 'CubieCube', pll_rec):
     for auf in range(4):
         test = state.apply_u_rot(auf)
         cp_key = tuple(test.cp[i] for i in range(4))
@@ -1114,9 +1295,11 @@ def solve_oll(state, oll_rec):
     return None, state
 
 
-def solve_pll(state, pll_rec):
+def solve_pll(state: 'CubieCube', pll_rec):
     name, alg, auf = recognize_pll(state, pll_rec)
+    _dbg(f"DEBUG: PLL recognized={name} auf={auf}")
     if name is None:
+        _dbg(f"DEBUG: PLL not recognized, cp={tuple(state.cp[:4])} ep={tuple(state.ep[:4])}")
         return None, state
     auf_str = {0: '', 1: 'U', 2: 'U2', 3: "U'"}[auf]
     full = (auf_str + ' ' + alg).strip() if name != 'skip' else ''
@@ -1138,10 +1321,10 @@ _tables_initialized = False
 
 
 def init_tables():
-    global PERM_MOVE, FLIP_MOVE, PERM_PRUN, FLIP_PRUN, PAIR_MOVE, PAIR_PRUN, OLL_RECOGNITION, PLL_RECOGNITION, _tables_initialized
+    global PERM_MOVE, FLIP_MOVE, PERM_PRUN, FLIP_PRUN, PAIR_MOVE, PAIR_PRUN, MACRO_PAIR_MOVE, MACRO_PAIR_PRUN, OLL_RECOGNITION, PLL_RECOGNITION, _tables_initialized
     if _tables_initialized:
         return
-    if os.path.exists(CACHE_FILE): # debug先禁用掉
+    if os.path.exists(CACHE_FILE):
         with open(CACHE_FILE, 'rb') as f:
             tables = pickle.load(f)
         PERM_MOVE = tables['perm_move']
@@ -1150,6 +1333,8 @@ def init_tables():
         FLIP_PRUN = tables['flip_prun']
         PAIR_MOVE = tables['pair_move']
         PAIR_PRUN = tables['pair_prun']
+        MACRO_PAIR_MOVE = tables.get('macro_pair_move', None)
+        MACRO_PAIR_PRUN = tables.get('macro_pair_prun', None)
         OLL_RECOGNITION = tables['oll_rec']
         PLL_RECOGNITION = tables['pll_rec']
     else:
@@ -1164,6 +1349,10 @@ def init_tables():
         PAIR_MOVE = pair_move
         pair_prun = build_pair_prun(pair_move)
         PAIR_PRUN = pair_prun
+        macro_pair_move = build_macro_pair_move_tables()
+        macro_pair_prun = build_macro_pair_prun(macro_pair_move)
+        MACRO_PAIR_MOVE = macro_pair_move
+        MACRO_PAIR_PRUN = macro_pair_prun
         oll_rec = build_oll_recognition()
         pll_rec = build_pll_recognition()
         OLL_RECOGNITION = oll_rec
@@ -1175,6 +1364,8 @@ def init_tables():
             'flip_prun': flip_prun,
             'pair_move': pair_move,
             'pair_prun': pair_prun,
+            'macro_pair_move': macro_pair_move,
+            'macro_pair_prun': macro_pair_prun,
             'oll_rec': oll_rec,
             'pll_rec': pll_rec,
         }
@@ -1185,6 +1376,34 @@ def init_tables():
 
 def moves_to_str(move_indices):
     return ' '.join(MOVE_NAMES[m] for m in move_indices) if move_indices else ''
+
+
+def merge_consecutive_moves(move_indices):
+    """Merge consecutive moves on the same face.
+    E.g. [R', R] → [R2], [R, R2] → [R'], [U, U] → [U2], [U2, U2] → [].
+    Move index encoding: face=idx//3, turn_type=idx%3 (0=CW, 1=half, 2=CCW).
+    CW adds 1, half adds 2, CCW adds 3. Total mod 4: 0=eliminate, 1=CW, 2=half, 3=CCW."""
+    if not move_indices:
+        return []
+    result = []
+    i = 0
+    while i < len(move_indices):
+        face = move_indices[i] // 3
+        total_turns = (move_indices[i] % 3) + 1  # CW=1, half=2, CCW=3
+        j = i + 1
+        while j < len(move_indices) and move_indices[j] // 3 == face:
+            total_turns += (move_indices[j] % 3) + 1
+            j += 1
+        total_turns %= 4
+        if total_turns == 1:
+            result.append(face * 3 + 0)  # CW
+        elif total_turns == 2:
+            result.append(face * 3 + 1)  # half turn
+        elif total_turns == 3:
+            result.append(face * 3 + 2)  # CCW
+        # total_turns == 0: eliminated (e.g. R R' or U2 U2)
+        i = j
+    return result
 
 
 class CFOPSolver:
@@ -1260,6 +1479,8 @@ class CFOPSolver:
 
 
 def main():
+    global DEBUG
+    DEBUG = True
     import sys
     import time
     if len(sys.argv) < 2:
