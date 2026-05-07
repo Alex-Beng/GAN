@@ -1,5 +1,6 @@
 import os
 import pickle
+import re
 from collections import deque
 import random
 from ALLL import EX_ALLLS
@@ -131,9 +132,10 @@ def apply_rotation(face, rot):
     return ROTATION_FACE_MAP[rot].get(face, face)
 
 def convert_alg_to_basic(alg_str):
-    tokens = alg_str.strip().split()
+    raw = alg_str.strip('"')
+    tokens = re.findall(r"[URFDLBurfdlbEMSxyz]2'?|[URFDLBurfdlbEMSxyz]['2]?", raw)
 
-    MOD_COUNT = {'': 1, "'": 3, '2': 2}
+    MOD_COUNT = {'': 1, "'": 3, '2': 2, "2'": 2}
 
     expanded = []
     for t in tokens:
@@ -158,6 +160,7 @@ def convert_alg_to_basic(alg_str):
                 expanded.extend(seq)
 
     result = list(expanded)
+    raw = ' '.join(list(expanded))
     i = len(result) - 1
     while i >= 0:
         t = result[i]
@@ -199,7 +202,7 @@ def convert_alg_to_basic(alg_str):
             simplified.append(base + "'")
         i = j
 
-    return ' '.join(simplified)
+    return ' '.join(simplified), raw
 
 F2L_PAIRS = [
     (4, 8),
@@ -633,7 +636,7 @@ def expand_rotations(tokens):
     return tokens
 
 def apply_alg_str(state, alg_str):
-    basic_alg = convert_alg_to_basic(alg_str)
+    basic_alg, _ = convert_alg_to_basic(alg_str)
     tokens = basic_alg.strip().split()
     s = state.copy()
     for t in tokens:
@@ -1112,7 +1115,7 @@ def _f2l_ida(state: 'CubieCube', pair_idx, remaining, last_face, path, pair_prun
     return False
 
 
-F2L_GREEDY_MODE = False  # If True, solve pairs sorted by heuristic (closest first)
+F2L_GREEDY_MODE = True  # If True, solve pairs sorted by heuristic (closest first)
 F2L_RANDOM_MODE = False  # If True, solve pairs in random order (for speedup)
 
 def solve_f2l(state: 'CubieCube', pair_prun, pair_move):
@@ -1222,7 +1225,7 @@ def build_oll_recognition():
 
     # Build table by applying each OLL algorithm's inverse (without AUF variations)
     for name, alg in OLL_ALGS.items():
-        basic_alg = convert_alg_to_basic(alg)
+        basic_alg, _ = convert_alg_to_basic(alg)
         inv = invert_alg(basic_alg)
         s = apply_alg_str(solved.copy(), inv)
         co_tuple = tuple(s.co[i] for i in range(4))
@@ -1246,7 +1249,7 @@ def build_pll_recognition():
     key_skip = (tuple(range(4)), tuple(range(4)))
 
     for name, alg in PLL_ALGS.items():
-        basic_alg = convert_alg_to_basic(alg)
+        basic_alg, _ = convert_alg_to_basic(alg)
         inv_alg = invert_alg(basic_alg)
 
         for auf in range(4):
@@ -1261,6 +1264,15 @@ def build_pll_recognition():
     return table
 
 
+def _check_d_intact(state: 'CubieCube'):
+    for e in range(4, 8):
+        if state.ep[e] != e or state.eo[e] != 0:
+            return False
+    for c in range(4, 8):
+        if state.cp[c] != c or state.co[c] != 0:
+            return False
+    return True
+
 def build_alll_recognition():
     """Build ALLL (1-look Last Layer) recognition table using ALLL_ALGS.
     Each formula is treated independently as a last-layer solver.
@@ -1268,14 +1280,20 @@ def build_alll_recognition():
     For each alg, apply its inverse to solved state and record the resulting state."""
     table = {}
     solved = CubieCube.solved()
-    
+    _dbg(f"DEBUG: Building ALLL recognition table... all algs={len(ALLL_ALGS)}")
     for name, alg in ALLL_ALGS.items():
-        basic_alg = convert_alg_to_basic(alg)
+        if ')2' in alg or ')3' in alg:
+            continue
+        basic_alg, rec_alg = convert_alg_to_basic(alg)
         for auf in range(4):
             auf_str = {0: '', 1: 'U', 2: 'U2', 3: "U'"}[auf]
             inv_alg = invert_alg(basic_alg)
             full_inv = (auf_str + ' ' + inv_alg).strip()
             s = apply_alg_str(solved.copy(), full_inv)
+            # 检查下底层是否被扰乱了，如果被扰乱了就不记录这个状态
+            if not _check_d_intact(s):
+                _dbg(f"DEBUG: ALLL alg {name} with AUF {auf_str} skipped due to d-layer disturbance\n alg: {alg}\n rec_alg: {rec_alg}\n basic_alg: {basic_alg}")
+                continue
             cp_key = tuple(s.cp[i] for i in range(4))
             co_key = tuple(s.co[i] for i in range(4))
             ep_key = tuple(s.ep[i] for i in range(4))
@@ -1284,7 +1302,7 @@ def build_alll_recognition():
             full_alg = (auf_str + ' ' + basic_alg).strip()
             if all_key not in table:
                 table[all_key] = full_alg
-    
+    _dbg(f"DEBUG: ALLL recognition table built with {len(table)} entries")
     # Add fully solved state
     solved_key = (tuple(range(4)), (0,0,0,0), tuple(range(4)), (0,0,0,0))
     table[solved_key] = ''
@@ -1493,22 +1511,19 @@ class CFOPSolver:
         alll_found = False
         
         if ALLL_RECOGNITION:
-            for auf in range(4):
-                test = state.apply_u_rot(auf)
-                cp_key = tuple(test.cp[i] for i in range(4))
-                co_key = tuple(test.co[i] for i in range(4))
-                ep_key = tuple(test.ep[i] for i in range(4))
-                eo_key = tuple(test.eo[i] for i in range(4))
-                all_key = (cp_key, co_key, ep_key, eo_key)
-                if all_key in ALLL_RECOGNITION:
-                    alll_alg = ALLL_RECOGNITION[all_key]
-                    auf_str = {0: '', 1: 'U', 2: 'U2', 3: "U'"}[auf]
-                    alll_str = (auf_str + ' ' + alll_alg).strip()
-                    if alll_str:
-                        state = apply_alg_str(state, alll_str)
-                    _dbg(f"DEBUG: ALLL found, auf={auf}, alg={alll_str}")
-                    alll_found = True
-                    break
+            cp_key = tuple(state.cp[i] for i in range(4))
+            co_key = tuple(state.co[i] for i in range(4))
+            ep_key = tuple(state.ep[i] for i in range(4))
+            eo_key = tuple(state.eo[i] for i in range(4))
+            all_key = (cp_key, co_key, ep_key, eo_key)
+            _dbg(f"DEBUG: Checking ALLL key={all_key} in_table={all_key in ALLL_RECOGNITION}")
+            if all_key in ALLL_RECOGNITION:
+                alll_alg = ALLL_RECOGNITION[all_key]
+                alll_str = alll_alg
+                if alll_str:
+                    state = apply_alg_str(state, alll_str)
+                _dbg(f"DEBUG: ALLL found, alg={alll_str}")
+                alll_found = True
         
         if not alll_found:
             # Fall back to OLL + PLL
