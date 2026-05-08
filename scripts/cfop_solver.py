@@ -1327,24 +1327,23 @@ def _check_d_intact(state: 'CubieCube'):
 
 def build_alll_recognition():
     """Build ALLL (1-look Last Layer) recognition table using ALLL_ALGS.
-    Each formula is treated independently as a last-layer solver.
-    Key = (cp, co, ep, eo) tuples for top-layer pieces (with 4 AUF variations).
-    For each alg, apply its inverse to solved state and record the resulting state."""
+    Build with 4 AUF variations per formula so the table covers all top-layer states.
+    Key = (cp, co, ep, eo) for each U^auf * f_inv(solved) state.
+    Value = complete formula including AUF prefix (U^auf + f).
+    At recognition time, just match state directly without extra AUF."""
     table = {}
     solved = CubieCube.solved()
     _dbg(f"DEBUG: Building ALLL recognition table... all algs={len(ALLL_ALGS)}")
     for name, alg in ALLL_ALGS.items():
-        # if ')2' in alg or ')3' in alg:
-        #     continue
         basic_alg, rec_alg = convert_alg_to_basic(alg)
-        for auf in range(1):
+        inv_alg = invert_alg(basic_alg)
+        for auf in range(4):
             auf_str = {0: '', 1: 'U', 2: 'U2', 3: "U'"}[auf]
-            inv_alg = invert_alg(basic_alg)
             full_inv = (auf_str + ' ' + inv_alg).strip()
             s = apply_alg_str(solved.copy(), full_inv)
-            # 检查下底层是否被扰乱了，如果被扰乱了就不记录这个状态
-            if not _check_d_intact(s) and auf == 0:
-                _dbg(f"DEBUG: ALLL alg {name} skipped due to d-layer disturbance\n alg: {alg}\n rec_alg: {rec_alg}\n basic_alg: {basic_alg}")
+            # Skip if bottom layers disturbed
+            if not _check_d_intact(s):
+                _dbg(f"DEBUG: ALLL alg {name} auf={auf} skipped due to d-layer disturbance")
                 continue
             cp_key = tuple(s.cp[i] for i in range(4))
             co_key = tuple(s.co[i] for i in range(4))
@@ -1352,7 +1351,8 @@ def build_alll_recognition():
             eo_key = tuple(s.eo[i] for i in range(4))
             all_key = (cp_key, co_key, ep_key, eo_key)
             full_alg = (auf_str + ' ' + basic_alg).strip()
-            if all_key not in table or len(table[all_key]) > len(full_alg):
+            # Keep shorter formula for same key
+            if all_key not in table or len(full_alg) < len(table[all_key]):
                 table[all_key] = full_alg
     _dbg(f"DEBUG: ALLL recognition table built with {len(table)} entries")
     # Add fully solved state
