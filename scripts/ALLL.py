@@ -6257,10 +6257,6 @@ U2 (R U R' U R U' R' U R U2') (M' U R' U R U2' r')
 """
 update_all("CUBEROOT", CUBEROOT_ALLL)
 
-ZBLL = """
-
-"""
-
 CUBE_EXPLORE = """
 U2 B' R' F' U2 F U2 R2 B2 L' B R' B2 L  
 R U' R' F' L2 U2 F' L' F U2 L2 U F 
