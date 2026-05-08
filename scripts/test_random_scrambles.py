@@ -66,6 +66,7 @@ def test_random_scrambles(num_tests=10, scramble_length=20, profile=False):
         'min_moves': float('inf'),
         'max_moves': 0,
         'failed_scrambles': [],
+        'alll_miss_cases': [],
         'time_records': []
     }
     
@@ -73,6 +74,8 @@ def test_random_scrambles(num_tests=10, scramble_length=20, profile=False):
         scramble = generate_scramble(scramble_length)
         print(f"\nTest {i+1}/{num_tests}")
         print(f"Scramble: {scramble}")
+        alll_rate = results['alll_hit'] / results['alll_total'] * 100 if results['alll_total'] > 0 else 0
+        print(f"ALLL hit rate: {alll_rate:.1f}%")
         
         start_time = time.time()
         
@@ -117,6 +120,17 @@ def test_random_scrambles(num_tests=10, scramble_length=20, profile=False):
             alll_hit = bool(result.get('alll'))
             if alll_hit:
                 results['alll_hit'] += 1
+            else:
+                # Record the scramble + cross+f2l as the case-generating formula
+                case_formula = (result['cross'] + ' ' + result['f2l']).strip()
+                results['alll_miss_cases'].append({
+                    'scramble': scramble,
+                    'cross': result['cross'],
+                    'f2l': result['f2l'],
+                    'oll': result['oll'],
+                    'pll': result['pll'],
+                    'case_formula': case_formula,
+                })
             print(f"Status: SUCCESS")
             print(f"Time: {elapsed:.3f}s")
             print(f"Moves: {move_count}")
@@ -146,6 +160,14 @@ def test_random_scrambles(num_tests=10, scramble_length=20, profile=False):
         if results['alll_total'] > 0:
             alll_rate = results['alll_hit'] / results['alll_total'] * 100
             print(f"ALLL hit rate: {results['alll_hit']}/{results['alll_total']} ({alll_rate:.1f}%)")
+        
+        if results['alll_miss_cases']:
+            print(f"\nALLL MISS cases ({len(results['alll_miss_cases'])}):")
+            for idx, case in enumerate(results['alll_miss_cases'], 1):
+                print(f"  #{idx}: scramble={case['scramble']}")
+                # print(f"       cross+f2l = {case['case_formula']}")
+                print(f"       generate = \n{case['scramble'] + case['case_formula']}\n")
+                # print(f"       OLL={case['oll']}  PLL={case['pll']}")
         
         # Top 10 slowest
         top10 = sorted(results['time_records'], reverse=True)[:10]

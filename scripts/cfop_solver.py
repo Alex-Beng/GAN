@@ -6,6 +6,7 @@ import random
 from ALLL import EX_ALLLS
 
 DEBUG = False
+# DEBUG = True
 
 def _dbg(*args, **kwargs):
     if DEBUG:
@@ -133,6 +134,26 @@ def apply_rotation(face, rot):
 
 def convert_alg_to_basic(alg_str):
     raw = alg_str.strip('"')
+    # Expand bracket notation: (moves)2 or (moves)2' — repeat bracketed sequence
+    def expand_brackets(s):
+        result = s
+        # Keep expanding until no more brackets
+        while True:
+            m = re.search(r'\(([^)]+)\)([2\'2\']?)', result)
+            if not m:
+                break
+            inner = m.group(1).strip()
+            repeat_mod = m.group(2) if m.group(2) else ''
+            # (X)2 means repeat twice, (X)2' means repeat twice then inverse? No — (X)2' = (X)(X'), but conventionally it's just (X)2 with a prime modifier on the whole thing
+            # Standard convention: (seq)N where N=2 means repeat 2 times; (seq)2' means repeat 2 times then apply prime to last repetition
+            # For simplicity: (seq)2 = seq seq, (seq)2' not standard but treat as seq seq'
+            repeat_count = 2 if '2' in repeat_mod else 1
+            expanded_inner = ' '.join([inner] * repeat_count)
+            result = result[:m.start()] + ' ' + expanded_inner + ' ' + result[m.end():]
+        return result
+
+    raw = expand_brackets(raw)
+
     tokens = re.findall(r"[URFDLBurfdlbEMSxyz]2'?|[URFDLBurfdlbEMSxyz]['2]?", raw)
 
     MOD_COUNT = {'': 1, "'": 3, '2': 2, "2'": 2}
@@ -218,6 +239,9 @@ F2L_MOVE_INDICES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 15, 16, 17]
 # 4 side faces × 4 triggers = 16 triggers + 3 U-layer turns = 19 macro moves
 # This reduces search depth by ~3x while having similar branching factor
 F2L_MACRO_MODE = True  # Switch to enable macro-based F2L search
+F2L_MACRO_FALLBACK = True # Switch to mecro mode when single mode can not find pair solve in depth
+F2L_GREEDY_MODE = True  # If True, solve pairs sorted by heuristic (closest first)
+F2L_RANDOM_MODE = False  # If True, solve pairs in random order (for speedup)
 
 # Move indices: U=0, U2=1, U'=2, R=3, R2=4, R'=5, F=6, F2=7, F'=8, L=12, L2=13, L'=14, B=15, B2=16, B'=17
 F2L_TRIGGERS = [
@@ -232,6 +256,7 @@ F2L_TRIGGERS = [
 ]
 F2L_U_MOVES = [[0], [1], [2]]  # U, U2, U'
 F2L_D_MOVES = [[9], [11], [10]]  # D, D', D2 (for keyhole F2L)
+# F2L_D_MOVES = [] 
 F2L_MACRO_MOVES = F2L_TRIGGERS + F2L_U_MOVES + F2L_D_MOVES  # 22 macro operations
 N_F2L_MACROS = len(F2L_MACRO_MOVES)
 
@@ -1115,17 +1140,15 @@ def _f2l_ida(state: 'CubieCube', pair_idx, remaining, last_face, path, pair_prun
     return False
 
 
-F2L_GREEDY_MODE = True  # If True, solve pairs sorted by heuristic (closest first)
-F2L_RANDOM_MODE = False  # If True, solve pairs in random order (for speedup)
-
 def solve_f2l(state: 'CubieCube', pair_prun, pair_move):
     if F2L_MACRO_MODE:
         return _solve_f2l_macro(state)
     return _solve_f2l_single(state, pair_prun, pair_move)
 
 
-def _solve_f2l_single(state, pair_prun, pair_move):
-    """Original F2L solver using single-move IDA*."""
+def _solve_f2l_single(state: 'CubieCube', pair_prun, pair_move):
+    """Original F2L solver using single-move IDA* with macro fallback on timeout."""
+    import time
     full_moves = []
     solved_pairs = set()
     for i in range(4):
@@ -1151,17 +1174,46 @@ def _solve_f2l_single(state, pair_prun, pair_move):
         found = False
         for _, pair_idx in heuristic:
             _dbg(f"DEBUG: solving F2L pair {pair_idx}")
-            path = solve_f2l_pair(state, pair_idx, pair_prun, pair_move, max_depth=11, protected_pairs=solved_pairs)
+            start_time = time.time()
+            path = solve_f2l_pair(state, pair_idx, pair_prun, pair_move, max_depth=6, protected_pairs=solved_pairs)
+            elapsed = time.time() - start_time
+            
             if path is not None:
                 full_moves.extend(path)
                 for m in path:
                     state.apply_move_idx(m)
-                _dbg(f"DEBUG: pair {pair_idx} solved with {len(path)} moves")
+                _dbg(f"DEBUG: pair {pair_idx} solved with {len(path)} moves ({elapsed:.3f}s)")
                 if not pair_is_solved(state, pair_idx):
                     return None
                 solved_pairs.add(pair_idx)
                 found = True
                 break
+            elif path is None:
+                if F2L_MACRO_FALLBACK:
+                    _dbg(f"DEBUG: pair {pair_idx} single search timed out ({elapsed:.3f}s), falling back to macro")
+                    macro_path = solve_f2l_pair_macro(state, pair_idx, MACRO_PAIR_PRUN, max_depth=8, protected_pairs=solved_pairs)
+                    if macro_path is not None:
+                        full_moves.extend(macro_path)
+                        for m in macro_path:
+                            state.apply_move_idx(m)
+                        _dbg(f"DEBUG: pair {pair_idx} solved with macro ({len(macro_path)} moves)")
+                        if not pair_is_solved(state, pair_idx):
+                            return None
+                        solved_pairs.add(pair_idx)
+                        found = True
+                        break
+                else:
+                    path = solve_f2l_pair(state, pair_idx, pair_prun, pair_move, max_depth=11, protected_pairs=solved_pairs)
+                    if path is not None:
+                        full_moves.extend(path)
+                        for m in path:
+                            state.apply_move_idx(m)
+                        _dbg(f"DEBUG: pair {pair_idx} solved with extended search ({len(path)} moves)")
+                        if not pair_is_solved(state, pair_idx):
+                            return None
+                        solved_pairs.add(pair_idx)
+                        found = True
+                        break
         
         if not found:
             _dbg(f"DEBUG: F2L failed at step {step}")
@@ -1282,17 +1334,17 @@ def build_alll_recognition():
     solved = CubieCube.solved()
     _dbg(f"DEBUG: Building ALLL recognition table... all algs={len(ALLL_ALGS)}")
     for name, alg in ALLL_ALGS.items():
-        if ')2' in alg or ')3' in alg:
-            continue
+        # if ')2' in alg or ')3' in alg:
+        #     continue
         basic_alg, rec_alg = convert_alg_to_basic(alg)
-        for auf in range(4):
+        for auf in range(1):
             auf_str = {0: '', 1: 'U', 2: 'U2', 3: "U'"}[auf]
             inv_alg = invert_alg(basic_alg)
             full_inv = (auf_str + ' ' + inv_alg).strip()
             s = apply_alg_str(solved.copy(), full_inv)
             # 检查下底层是否被扰乱了，如果被扰乱了就不记录这个状态
-            if not _check_d_intact(s):
-                _dbg(f"DEBUG: ALLL alg {name} with AUF {auf_str} skipped due to d-layer disturbance\n alg: {alg}\n rec_alg: {rec_alg}\n basic_alg: {basic_alg}")
+            if not _check_d_intact(s) and auf == 0:
+                _dbg(f"DEBUG: ALLL alg {name} skipped due to d-layer disturbance\n alg: {alg}\n rec_alg: {rec_alg}\n basic_alg: {basic_alg}")
                 continue
             cp_key = tuple(s.cp[i] for i in range(4))
             co_key = tuple(s.co[i] for i in range(4))
@@ -1300,7 +1352,7 @@ def build_alll_recognition():
             eo_key = tuple(s.eo[i] for i in range(4))
             all_key = (cp_key, co_key, ep_key, eo_key)
             full_alg = (auf_str + ' ' + basic_alg).strip()
-            if all_key not in table:
+            if all_key not in table or len(table[all_key]) > len(full_alg):
                 table[all_key] = full_alg
     _dbg(f"DEBUG: ALLL recognition table built with {len(table)} entries")
     # Add fully solved state
@@ -1511,19 +1563,23 @@ class CFOPSolver:
         alll_found = False
         
         if ALLL_RECOGNITION:
-            cp_key = tuple(state.cp[i] for i in range(4))
-            co_key = tuple(state.co[i] for i in range(4))
-            ep_key = tuple(state.ep[i] for i in range(4))
-            eo_key = tuple(state.eo[i] for i in range(4))
-            all_key = (cp_key, co_key, ep_key, eo_key)
-            _dbg(f"DEBUG: Checking ALLL key={all_key} in_table={all_key in ALLL_RECOGNITION}")
-            if all_key in ALLL_RECOGNITION:
-                alll_alg = ALLL_RECOGNITION[all_key]
-                alll_str = alll_alg
-                if alll_str:
-                    state = apply_alg_str(state, alll_str)
-                _dbg(f"DEBUG: ALLL found, alg={alll_str}")
-                alll_found = True
+            for auf in range(4):
+                test = state.apply_u_rot(auf)
+                cp_key = tuple(test.cp[i] for i in range(4))
+                co_key = tuple(test.co[i] for i in range(4))
+                ep_key = tuple(test.ep[i] for i in range(4))
+                eo_key = tuple(test.eo[i] for i in range(4))
+                all_key = (cp_key, co_key, ep_key, eo_key)
+                if all_key in ALLL_RECOGNITION:
+                    alll_alg = ALLL_RECOGNITION[all_key]
+                    auf_str = {0: '', 1: 'U', 2: 'U2', 3: "U'"}[auf]
+                    alll_str = (auf_str + ' ' + alll_alg).strip()
+                    if alll_str:
+                        state = apply_alg_str(state, alll_str)
+                        
+                    _dbg(f"DEBUG: ALLL found, auf={auf}, alg={alll_str}")
+                    alll_found = True
+                    break
         
         if not alll_found:
             # Fall back to OLL + PLL
@@ -1635,8 +1691,12 @@ def main():
         sys.exit(1)
     print(f"Cross: {result['cross']}")
     print(f"F2L: {result['f2l']}")
-    print(f"OLL: {result['oll']}")
-    print(f"PLL: {result['pll']}")
+    alll_hit = bool(result.get('alll'))
+    if not alll_hit:
+        print(f"OLL: {result['oll']}")
+        print(f"PLL: {result['pll']}")
+    else:
+        print(f"ALL: {result['alll']}")
     print(f"Solution: {result['solution']}")
     print(f"Time: {elapsed_time:.3f}s")
 
