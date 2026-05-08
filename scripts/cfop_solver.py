@@ -6,7 +6,10 @@ import random
 from ALLL import EX_ALLLS
 
 DEBUG = False
-# DEBUG = True
+DEBUG = True
+
+ALLL_ABLE = True
+# ALLL_ABLE = False
 
 def _dbg(*args, **kwargs):
     if DEBUG:
@@ -1298,21 +1301,25 @@ def build_oll_recognition():
 def build_pll_recognition():
     table = {}
     solved = CubieCube.solved()
-    key_skip = (tuple(range(4)), tuple(range(4)))
+    AUF_STRS = {0: '', 1: 'U', 2: 'U2', 3: "U'"}
 
     for name, alg in PLL_ALGS.items():
         basic_alg, _ = convert_alg_to_basic(alg)
-        inv_alg = invert_alg(basic_alg)
+        for pre in range(4):
+            for post in range(4):
+                pre_str = AUF_STRS[pre]
+                post_str = AUF_STRS[post]
+                full_alg = ' '.join(p for p in [pre_str, basic_alg, post_str] if p)
+                inv_full = invert_alg(full_alg)
+                s = apply_alg_str(solved.copy(), inv_full)
+                cp_key = tuple(s.cp[i] for i in range(4))
+                ep_key = tuple(s.ep[i] for i in range(4))
+                key = (cp_key, ep_key)
+                if key not in table or len(full_alg) < len(table[key][1]):
+                    table[key] = (name, full_alg)
 
-        for auf in range(4):
-            auf_str = {0: '', 1: 'U', 2: 'U2', 3: "U'"}[auf]
-            full_inv = (auf_str + ' ' + inv_alg).strip()
-            s = apply_alg_str(solved.copy(), full_inv)
-            cp_key = tuple(s.cp[i] for i in range(4))
-            ep_key = tuple(s.ep[i] for i in range(4))
-            table[(cp_key, ep_key)] = (name, basic_alg, auf)
-
-    table[key_skip] = ('skip', '', 0)
+    key_skip = (tuple(range(4)), tuple(range(4)))
+    table[key_skip] = ('skip', '')
     return table
 
 
@@ -1326,39 +1333,31 @@ def _check_d_intact(state: 'CubieCube'):
     return True
 
 def build_alll_recognition():
-    """Build ALLL (1-look Last Layer) recognition table using ALLL_ALGS.
-    Build with 4 AUF variations per formula so the table covers all top-layer states.
-    Key = (cp, co, ep, eo) for each U^auf * f_inv(solved) state.
-    Value = complete formula including AUF prefix (U^auf + f).
-    At recognition time, just match state directly without extra AUF."""
     table = {}
     solved = CubieCube.solved()
+    AUF_STRS = {0: '', 1: 'U', 2: 'U2', 3: "U'"}
     _dbg(f"DEBUG: Building ALLL recognition table... all algs={len(ALLL_ALGS)}")
     for name, alg in ALLL_ALGS.items():
-        basic_alg, rec_alg = convert_alg_to_basic(alg)
-        inv_alg = invert_alg(basic_alg)
-        for auf in range(4):
-            auf_str = {0: '', 1: 'U', 2: 'U2', 3: "U'"}[auf]
-            full_inv = (auf_str + ' ' + inv_alg).strip()
-            s = apply_alg_str(solved.copy(), full_inv)
-            # Skip if bottom layers disturbed
-            if not _check_d_intact(s):
-                _dbg(f"DEBUG: ALLL alg {name} auf={auf} skipped due to d-layer disturbance")
-                continue
-            cp_key = tuple(s.cp[i] for i in range(4))
-            co_key = tuple(s.co[i] for i in range(4))
-            ep_key = tuple(s.ep[i] for i in range(4))
-            eo_key = tuple(s.eo[i] for i in range(4))
-            all_key = (cp_key, co_key, ep_key, eo_key)
-            full_alg = (auf_str + ' ' + basic_alg).strip()
-            # Keep shorter formula for same key
-            if all_key not in table or len(full_alg) < len(table[all_key]):
-                table[all_key] = full_alg
+        basic_alg, _ = convert_alg_to_basic(alg)
+        for pre in range(4):
+            for post in range(4):
+                pre_str = AUF_STRS[pre]
+                post_str = AUF_STRS[post]
+                full_alg = ' '.join(p for p in [pre_str, basic_alg, post_str] if p)
+                inv_full = invert_alg(full_alg)
+                s = apply_alg_str(solved.copy(), inv_full)
+                if not _check_d_intact(s):
+                    continue
+                cp_key = tuple(s.cp[i] for i in range(4))
+                co_key = tuple(s.co[i] for i in range(4))
+                ep_key = tuple(s.ep[i] for i in range(4))
+                eo_key = tuple(s.eo[i] for i in range(4))
+                all_key = (cp_key, co_key, ep_key, eo_key)
+                if all_key not in table or len(full_alg) < len(table[all_key][1]):
+                    table[all_key] = (name, full_alg)
     _dbg(f"DEBUG: ALLL recognition table built with {len(table)} entries")
-    # Add fully solved state
-    solved_key = (tuple(range(4)), (0,0,0,0), tuple(range(4)), (0,0,0,0))
-    table[solved_key] = ''
-    
+    solved_key = (tuple(range(4)), (0, 0, 0, 0), tuple(range(4)), (0, 0, 0, 0))
+    table[solved_key] = ('skip', '')
     return table
 
 
@@ -1380,17 +1379,15 @@ def recognize_oll(state: 'CubieCube', oll_rec):
 
 
 def recognize_pll(state: 'CubieCube', pll_rec):
-    for auf in range(4):
-        test = state.apply_u_rot(auf)
-        cp_key = tuple(test.cp[i] for i in range(4))
-        ep_key = tuple(test.ep[i] for i in range(4))
-        key = (cp_key, ep_key)
-        if key in pll_rec:
-            result = pll_rec[key]
-            if result[0] == 'skip':
-                return 'skip', '', auf
-            return result[0], result[1], auf
-    return None, None, 0
+    cp_key = tuple(state.cp[i] for i in range(4))
+    ep_key = tuple(state.ep[i] for i in range(4))
+    key = (cp_key, ep_key)
+    if key in pll_rec:
+        name, alg = pll_rec[key]
+        if name == 'skip':
+            return 'skip', ''
+        return name, alg
+    return None, None
 
 
 def solve_oll(state, oll_rec):
@@ -1408,22 +1405,40 @@ def solve_oll(state, oll_rec):
 
 
 def solve_pll(state: 'CubieCube', pll_rec):
-    name, alg, auf = recognize_pll(state, pll_rec)
-    _dbg(f"DEBUG: PLL recognized={name} auf={auf}")
+    result = recognize_pll(state, pll_rec)
+    name, alg = result
+    _dbg(f"DEBUG: PLL recognized={name}")
     if name is None:
         _dbg(f"DEBUG: PLL not recognized, cp={tuple(state.cp[:4])} ep={tuple(state.ep[:4])}")
         return None, state
-    auf_str = {0: '', 1: 'U', 2: 'U2', 3: "U'"}[auf]
-    full = (auf_str + ' ' + alg).strip() if name != 'skip' else ''
+    full = alg if name != 'skip' else ''
     if full:
         state = apply_alg_str(state, full)
-    if not state.is_solved():
-        for post_auf in range(1, 4):
-            test = state.apply_u_rot(post_auf)
-            if test.is_solved():
-                full = (full + ' ' + {1: 'U', 2: 'U2', 3: "U'"}[post_auf]).strip()
-                state = test
-                break
+    return full, state
+
+
+def recognize_alll(state: 'CubieCube', alll_rec):
+    cp_key = tuple(state.cp[i] for i in range(4))
+    co_key = tuple(state.co[i] for i in range(4))
+    ep_key = tuple(state.ep[i] for i in range(4))
+    eo_key = tuple(state.eo[i] for i in range(4))
+    key = (cp_key, co_key, ep_key, eo_key)
+    if key in alll_rec:
+        name, alg = alll_rec[key]
+        if name == 'skip':
+            return 'skip', ''
+        return name, alg
+    return None, None
+
+
+def solve_alll(state: 'CubieCube', alll_rec):
+    name, alg = recognize_alll(state, alll_rec)
+    _dbg(f"DEBUG: ALLL recognized={name}")
+    if name is None:
+        return None, state
+    full = alg if name != 'skip' else ''
+    if full:
+        state = apply_alg_str(state, full)
     return full, state
 
 
@@ -1436,9 +1451,15 @@ def init_tables():
     global PERM_MOVE, FLIP_MOVE, PERM_PRUN, FLIP_PRUN, PAIR_MOVE, PAIR_PRUN, MACRO_PAIR_MOVE, MACRO_PAIR_PRUN, OLL_RECOGNITION, PLL_RECOGNITION, ALLL_RECOGNITION, _tables_initialized
     if _tables_initialized:
         return
+    cache_valid = False
     if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, 'rb') as f:
-            tables = pickle.load(f)
+        try:
+            with open(CACHE_FILE, 'rb') as f:
+                tables = pickle.load(f)
+                cache_valid = True
+        except Exception:
+            pass
+    if cache_valid:
         PERM_MOVE = tables['perm_move']
         FLIP_MOVE = tables['flip_move']
         PERM_PRUN = tables['perm_prun']
@@ -1449,9 +1470,7 @@ def init_tables():
         MACRO_PAIR_PRUN = tables.get('macro_pair_prun', None)
         OLL_RECOGNITION = tables['oll_rec']
         PLL_RECOGNITION = tables['pll_rec']
-        ALLL_RECOGNITION = tables.get('alll_rec', None)
-        if ALLL_RECOGNITION is None:
-            ALLL_RECOGNITION = build_alll_recognition()
+        ALLL_RECOGNITION = tables['alll_rec']
     else:
         print("Building CFOP tables (first run)...", flush=True)
         perm_move, flip_move = build_cross_move_tables()
@@ -1556,31 +1575,17 @@ class CFOPSolver:
         f2l_str = moves_to_str(f2l_moves)
         _dbg(f"DEBUG: f2l = {f2l_str}")
 
-        # Try ALLL (1-look Last Layer) first
         alll_str = ''
         oll_str = ''
         pll_str = ''
         alll_found = False
-        
-        if ALLL_RECOGNITION:
-            for auf in range(4):
-                test = state.apply_u_rot(auf)
-                cp_key = tuple(test.cp[i] for i in range(4))
-                co_key = tuple(test.co[i] for i in range(4))
-                ep_key = tuple(test.ep[i] for i in range(4))
-                eo_key = tuple(test.eo[i] for i in range(4))
-                all_key = (cp_key, co_key, ep_key, eo_key)
-                if all_key in ALLL_RECOGNITION:
-                    alll_alg = ALLL_RECOGNITION[all_key]
-                    auf_str = {0: '', 1: 'U', 2: 'U2', 3: "U'"}[auf]
-                    alll_str = (auf_str + ' ' + alll_alg).strip()
-                    if alll_str:
-                        state = apply_alg_str(state, alll_str)
-                        
-                    _dbg(f"DEBUG: ALLL found, auf={auf}, alg={alll_str}")
-                    alll_found = True
-                    break
-        
+
+        if ALLL_RECOGNITION and ALLL_ABLE:
+            alll_str, state = solve_alll(state, ALLL_RECOGNITION)
+            if alll_str is not None:
+                alll_found = True
+                _dbg(f"DEBUG: ALLL found, alg={alll_str}")
+
         if not alll_found:
             # Fall back to OLL + PLL
             _dbg("DEBUG: ALLL not found, falling back to OLL+PLL")
@@ -1612,18 +1617,8 @@ class CFOPSolver:
                 return None
             _dbg(f"DEBUG: pll = {pll_str}")
 
-        # Verify final state is solved (with possible AUF adjustment)
-        if not state.is_solved():
-            for post_auf in range(1, 4):
-                test = state.apply_u_rot(post_auf)
-                if test.is_solved():
-                    auf_name = {1: 'U', 2: 'U2', 3: "U'"}[post_auf]
-                    if alll_found:
-                        alll_str = (alll_str + ' ' + auf_name).strip()
-                    else:
-                        pll_str = (pll_str + ' ' + auf_name).strip()
-                    state = apply_alg_str(state, auf_name)
-                    break
+        if DEBUG and not state.is_solved():
+            _dbg(f"DEBUG: state not solved after LL, cp={state.cp} co={state.co} ep={state.ep} eo={state.eo}")
 
         solution_parts = [cross_str, f2l_str]
         if alll_found:
@@ -1631,6 +1626,13 @@ class CFOPSolver:
         else:
             solution_parts.extend([oll_str, pll_str])
         solution = ' '.join(p for p in solution_parts if p)
+
+        if DEBUG:
+            verify = apply_alg_str(CubieCube.from_facelet(facelet_str), solution)
+            if verify.is_solved():
+                _dbg("DEBUG: solution verified OK")
+            else:
+                _dbg(f"DEBUG: solution FAILED verification, final cp={verify.cp} co={verify.co} ep={verify.ep} eo={verify.eo}")
 
         result = {
             'cross': cross_str,
