@@ -10,7 +10,7 @@ use crate::crypto;
 use crate::device_config::*;
 use crate::protocol;
 
-pub async fn run(queue: Arc<Mutex<VecDeque<(u8, u8)>>>, cube_state: Arc<Mutex<protocol::CubeState>>) {
+pub async fn run(queue: Arc<Mutex<VecDeque<(u8, u8)>>>, cube_state: Arc<Mutex<protocol::CubeState>>, move_delay_ms: Arc<Mutex<u64>>) {
     unsafe {
         esp_idf_svc::sys::esp_iface_mac_addr_set(
             MAC.as_ptr(),
@@ -208,11 +208,6 @@ pub async fn run(queue: Arc<Mutex<VecDeque<(u8, u8)>>>, cube_state: Arc<Mutex<pr
             continue;
         };
 
-        if !*connected.lock().unwrap() {
-            Timer::after(Duration::from_millis(100)).await;
-            continue;
-        }
-
         let now = embassy_time::Instant::now();
         let elapsed = now.duration_since(last_move_time).as_millis().min(u16::MAX as u64) as u16;
         last_move_time = now;
@@ -239,12 +234,11 @@ pub async fn run(queue: Arc<Mutex<VecDeque<(u8, u8)>>>, cube_state: Arc<Mutex<pr
         state_char_loop.lock().set_value(&move_msg).notify();
 
         let delay = {
+            let base = *move_delay_ms.lock().unwrap();
             let q = queue.lock().unwrap();
-            if q.len() > 20 { 50 }
-            else if q.len() > 10 { 50 }
-            else if q.len() > 5 { 50 }
-            else if q.len() > 0 { 50 }
-            else { 100 }
+            if q.len() > 20 { base.min(100) }
+            else if q.len() > 5 { base }
+            else { base }
         };
         Timer::after(Duration::from_millis(delay)).await;
 

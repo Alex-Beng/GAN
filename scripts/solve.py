@@ -84,7 +84,7 @@ def solve_cfop(facelets, debug=False):
     oll_n   = len(result['oll'].split())   if result['oll']   else 0
     pll_n   = len(result['pll'].split())   if result['pll']   else 0
     alll_n  = len(result['alll'].split())  if result['alll']  else 0
-    total_n = cross_n + f2l_n + oll_n + pll_n
+    total_n = cross_n + f2l_n + oll_n + pll_n + alll_n
     print(f"  Cross ({cross_n}): {result['cross']}")
     print(f"  F2L   ({f2l_n}): {result['f2l']}")
     print(f"  OLL   ({oll_n}): {result['oll']}")

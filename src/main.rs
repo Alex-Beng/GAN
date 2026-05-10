@@ -22,9 +22,11 @@ fn main() {
 
     let queue: Arc<Mutex<VecDeque<(u8, u8)>>> = Arc::new(Mutex::new(VecDeque::new()));
     let cube_state: Arc<Mutex<protocol::CubeState>> = Arc::new(Mutex::new(protocol::CubeState::solved()));
+    let move_delay_ms: Arc<Mutex<u64>> = Arc::new(Mutex::new(http::load_move_delay(&nvs)));
 
-    let _wifi = wifi::start_wifi(peripherals.modem, sys_loop, nvs).unwrap();
-    let _server = http::start_http_server(queue.clone(), _wifi.clone(), cube_state.clone()).unwrap();
+    let _wifi = wifi::start_wifi(peripherals.modem, sys_loop, nvs.clone()).unwrap();
+    let _server = http::start_http_server(queue.clone(), _wifi.clone(), nvs.clone(), cube_state.clone(), move_delay_ms.clone()).unwrap();
+    wifi::sta_reconnect_loop(_wifi.clone(), nvs);
 
-    esp_idf_svc::hal::task::block_on(ble::run(queue, cube_state));
+    esp_idf_svc::hal::task::block_on(ble::run(queue, cube_state, move_delay_ms));
 }

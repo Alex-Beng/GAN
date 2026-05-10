@@ -77,10 +77,21 @@ input { width: 100%; height: 40px; border: 1px solid #ccc; border-radius: 8px; p
 
 <div class="section">
 <h3>WiFi 模式</h3>
-<input id="wifiSsid" placeholder="WiFi 名称 (SSID)">
-<input id="wifiPass" type="password" placeholder="WiFi 密码">
-<button class="btn" onclick="switchWifi(false)">连接局域网</button>
+<div id="wifiStatus" style="font-size:13px;color:#666;margin-bottom:8px">加载中...</div>
+<input id="wifiSsid" placeholder="WiFi 名称 (SSID)" oninput="enableWifiBtn()">
+<input id="wifiPass" type="password" placeholder="WiFi 密码" oninput="enableWifiBtn()">
+<button class="btn" id="wifiStaBtn" onclick="switchWifi(false)" disabled>连接局域网</button>
 <button class="btn" style="background:#ff9800;margin-top:4px" onclick="switchWifi(true)">切回热点模式</button>
+</div>
+
+<div class="section">
+<h3>转动延迟</h3>
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+  <input type="range" id="delaySlider" min="0" max="500" step="10" value="50" style="flex:1;height:40px" oninput="delaySliderChange()">
+  <input type="number" id="delayInput" min="0" max="500" value="50" style="width:80px;margin-bottom:0" oninput="delayInputChange()">
+  <span style="color:#666;font-size:14px">ms</span>
+</div>
+<button class="btn" onclick="setDelay()">保存延迟</button>
 </div>
 
 <script>
@@ -211,13 +222,48 @@ function resetCube() {
 function switchWifi(isAp) {
   const ssid = document.getElementById('wifiSsid').value;
   const pass = document.getElementById('wifiPass').value;
-  const body = isAp ? {ap:1} : {ap:0, ssid, pass};
+  const body = isAp ? {ap:1,sta:0,ssid:'',pass:''} : {ap:0,sta:1,ssid,pass};
   fetch('/api/wifi/mode', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body)
-  }).then(r => r.text()).then(t => { toast(t); fetchFacelets(); }).catch(() => toast('错误'));
+  }).then(r => r.text()).then(t => { toast(t); fetchWifiStatus(); }).catch(() => toast('错误'));
 }
+
+function fetchWifiStatus() {
+  fetch('/api/wifi/status').then(r => r.json()).then(d => {
+    const el = document.getElementById('wifiStatus');
+    let text = 'AP: ' + (d.ap_active ? '✅ 已开启' : '❌ 已关闭');
+    text += ' | STA: ' + (d.sta_connected ? '✅ 已连接' : '❌ 未连接');
+    if (d.ip) text += ' (' + d.ip + ')';
+    el.textContent = text;
+  }).catch(() => {
+    document.getElementById('wifiStatus').textContent = '获取状态失败';
+  });
+}
+fetchWifiStatus();
+setInterval(fetchWifiStatus, 5000);
+
+function enableWifiBtn() {
+  const ssid = document.getElementById('wifiSsid').value.trim();
+  document.getElementById('wifiStaBtn').disabled = ssid.length === 0;
+}
+
+function delaySliderChange() {
+  document.getElementById('delayInput').value = document.getElementById('delaySlider').value;
+}
+function delayInputChange() {
+  document.getElementById('delaySlider').value = document.getElementById('delayInput').value;
+}
+function setDelay() {
+  const d = document.getElementById('delayInput').value;
+  fetch('/api/delay', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delay:parseInt(d)})})
+    .then(r=>r.text()).then(t=>toast('延迟: '+t)).catch(()=>toast('设置失败'));
+}
+fetch('/api/delay').then(r=>r.json()).then(j=>{
+  document.getElementById('delaySlider').value=j.delay;
+  document.getElementById('delayInput').value=j.delay;
+});
 </script>
 </body>
 </html>

@@ -1,9 +1,6 @@
 pub const DEVICE_NAME: &str = "GANi3SB";
-pub const WIFI_MODE_AP: bool = false;
 pub const WIFI_AP_SSID: &str = "GanCubeEmu";
 pub const WIFI_AP_PASS: &str = "";
-pub const WIFI_STA_SSID: &str = "BigTalent";
-pub const WIFI_STA_PASS: &str = "88882727";
 pub const MAC: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xCA];
 pub const MANUFACTURER_CIC: u16 = 0x0001;
 pub const MANUFACTURER_EXTRA: [u8; 3] = [0x00, 0x00, 0x00];
