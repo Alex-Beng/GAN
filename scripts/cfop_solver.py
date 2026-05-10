@@ -8,8 +8,7 @@ from ALLL import EX_ALLLS
 DEBUG = False
 DEBUG = True
 
-ALLL_ABLE = True
-# ALLL_ABLE = False
+ALLL_PROB = 0.5
 
 def _dbg(*args, **kwargs):
     if DEBUG:
@@ -241,7 +240,7 @@ F2L_MOVE_INDICES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 15, 16, 17]
 # Each trigger is a 3-move sequence (X U X', X U' X', X' U X, X' U' X)
 # 4 side faces × 4 triggers = 16 triggers + 3 U-layer turns = 19 macro moves
 # This reduces search depth by ~3x while having similar branching factor
-F2L_MACRO_MODE = True  # Switch to enable macro-based F2L search
+F2L_MACRO_MODE = False  # Switch to enable macro-based F2L search
 F2L_MACRO_FALLBACK = True # Switch to mecro mode when single mode can not find pair solve in depth
 F2L_GREEDY_MODE = True  # If True, solve pairs sorted by heuristic (closest first)
 F2L_RANDOM_MODE = False  # If True, solve pairs in random order (for speedup)
@@ -1580,7 +1579,7 @@ class CFOPSolver:
         pll_str = ''
         alll_found = False
 
-        if ALLL_RECOGNITION and ALLL_ABLE:
+        if ALLL_RECOGNITION and ALLL_PROB > 0 and (ALLL_PROB >= 1.0 or random.random() < ALLL_PROB):
             alll_str, state = solve_alll(state, ALLL_RECOGNITION)
             if alll_str is not None:
                 alll_found = True
