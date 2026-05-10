@@ -7,3 +7,5 @@
 codeflicker.md
 scripts/.cfop_cache.pkl
 __pycache__
+/share
+*.log
