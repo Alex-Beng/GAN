@@ -40,7 +40,7 @@ cargo espflash flash --monitor --chip esp32c3
 
 ```bash
 # 推荐：espflash monitor（能解析 panic 堆栈）
-espflash monitor COM3
+espflash monitor -p COM3
 
 # ESP-IDF 自带
 idf.py -p COM3 monitor
