@@ -61,6 +61,7 @@ pub fn start_http_server(
         let face;
         let dir;
         if let Ok(s) = std::str::from_utf8(&body) {
+            log::info!("/api/move body ({} bytes): {}", s.len(), s);
             face = parse_json_u8(s, "face");
             dir = parse_json_u8(s, "dir");
         } else {
@@ -133,6 +134,8 @@ pub fn start_http_server(
         } else {
             "bad request".to_string()
         };
+
+        log::info!("/api/moves resp: {}", resp_text);
 
         req.into_ok_response()?
             .write_all(resp_text.as_bytes())?;

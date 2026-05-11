@@ -208,6 +208,11 @@ pub async fn run(queue: Arc<Mutex<VecDeque<(u8, u8)>>>, cube_state: Arc<Mutex<pr
             continue;
         };
 
+        let names = ["U", "R", "F", "D", "L", "B"];
+        let dir_str = if dir == 0 { "" } else { "'" };
+        let qlen = queue.lock().unwrap().len();
+        log::info!("BLE move: {}{} (face={} dir={}) queue_remaining={}", names[face as usize], dir_str, face, dir, qlen);
+
         let now = embassy_time::Instant::now();
         let elapsed = now.duration_since(last_move_time).as_millis().min(u16::MAX as u64) as u16;
         last_move_time = now;
