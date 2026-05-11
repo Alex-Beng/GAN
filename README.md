@@ -33,3 +33,21 @@ cargo espflash flash --monitor --chip esp32c3
 ## 相关项目
 
 - [MOYU](../MOYU) - 基于 gan-cube-emu 的自动上分项目
+
+## 串口日志调试
+
+固件通过 UART 输出运行日志（波特率 115200），烧录后可通过以下方式查看：
+
+```bash
+# 推荐：espflash monitor（能解析 panic 堆栈）
+espflash monitor COM3
+
+# ESP-IDF 自带
+idf.py -p COM3 monitor
+
+# 通用串口工具
+python -m serial.tools.miniterm COM3 115200
+# 或 PuTTY：Connection type → Serial，Serial line → COM3，Speed → 115200
+```
+
+**查看 COM 端口**：设备管理器 → 端口(COM和LPT)，或命令行 `mode`。ESP32-C3 通常出现两个 COM 口，选数字较大的（UART 口）。

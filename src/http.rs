@@ -99,6 +99,7 @@ pub fn start_http_server(
         }
 
         let resp_text = if let Ok(s) = std::str::from_utf8(&body) {
+            log::info!("/api/moves body ({} bytes): {}", s.len(), s);
             let mut results = Vec::new();
             let mut pos = 0;
             while let Some(start) = s[pos..].find("{") {
