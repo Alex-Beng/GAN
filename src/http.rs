@@ -70,11 +70,18 @@ pub fn start_http_server(
         }
 
         let resp_text = if let (Some(f), Some(d)) = (face, dir) {
-            if f < 6 && d < 2 {
-                queue1.lock().unwrap().push_back((f, d));
+            if f < 6 && d < 3 {
                 let names = ["U", "R", "F", "D", "L", "B"];
-                let dir_str = if d == 0 { "" } else { "'" };
-                std::format!("{}{}", names[f as usize], dir_str)
+                if d == 2 {
+                    // Double move: push two CW turns
+                    queue1.lock().unwrap().push_back((f, 0));
+                    queue1.lock().unwrap().push_back((f, 0));
+                    std::format!("{}2", names[f as usize])
+                } else {
+                    queue1.lock().unwrap().push_back((f, d));
+                    let dir_str = if d == 0 { "" } else { "'" };
+                    std::format!("{}{}", names[f as usize], dir_str)
+                }
             } else {
                 "invalid".to_string()
             }
@@ -89,18 +96,31 @@ pub fn start_http_server(
 
     let queue2 = queue.clone();
     server.fn_handler("/api/moves", Method::Post, move |mut req| {
-        let mut body = Vec::new();
-        let mut buf = [0u8; 128];
+        let content_len = req.content_len().unwrap_or(0) as usize;
+        let mut body = Vec::with_capacity(content_len.max(256));
+        let mut buf = [0u8; 256];
         loop {
+            if content_len > 0 && body.len() >= content_len {
+                break;
+            }
             match req.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => body.extend_from_slice(&buf[..n]),
-                Err(_) => break,
+                Err(_) => {
+                    if content_len > 0 && body.len() < content_len {
+                        log::warn!("/api/moves read err, got {}/{} bytes, retry", body.len(), content_len);
+                        continue;
+                    }
+                    break;
+                }
             }
         }
+        if content_len > 0 && body.len() < content_len {
+            log::warn!("/api/moves body truncated: got {}/{} bytes", body.len(), content_len);
+        }
+        log::info!("/api/moves body {}/{} bytes", body.len(), content_len);
 
         let resp_text = if let Ok(s) = std::str::from_utf8(&body) {
-            log::info!("/api/moves body ({} bytes): {}", s.len(), s);
             let mut results = Vec::new();
             let mut pos = 0;
             while let Some(start) = s[pos..].find("{") {
@@ -110,11 +130,18 @@ pub fn start_http_server(
                     let face = parse_json_u8(obj, "face");
                     let dir = parse_json_u8(obj, "dir");
                     if let (Some(f), Some(d)) = (face, dir) {
-                        if f < 6 && d < 2 {
-                            queue2.lock().unwrap().push_back((f, d));
+                        if f < 6 && d < 3 {
                             let names = ["U", "R", "F", "D", "L", "B"];
-                            let dir_str = if d == 0 { "" } else { "'" };
-                            results.push(std::format!("{}{}", names[f as usize], dir_str));
+                            if d == 2 {
+                                // Double move: push two CW turns
+                                queue2.lock().unwrap().push_back((f, 0));
+                                queue2.lock().unwrap().push_back((f, 0));
+                                results.push(std::format!("{}2", names[f as usize]));
+                            } else {
+                                queue2.lock().unwrap().push_back((f, d));
+                                let dir_str = if d == 0 { "" } else { "'" };
+                                results.push(std::format!("{}{}", names[f as usize], dir_str));
+                            }
                         } else {
                             results.push("invalid".to_string());
                         }

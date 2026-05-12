@@ -1,6 +1,5 @@
 import requests
 import sys
-import readline
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://192.168.50.246"
 
@@ -9,11 +8,19 @@ FACE_MAP = {
     'U': 0, 'R': 1, 'F': 2, 'D': 3, 'L': 4, 'B': 5,
 }
 
+DIR_CW = 0
+DIR_CCW = 1
+DIR_DOUBLE = 2
+
 def send_moves(moves):
     if not moves:
         return
     r = requests.post(f"{BASE}/api/moves", json=moves)
-    print(f"-> {r.text}")
+    resp_text = r.text
+    if not resp_text.isascii():
+        print(f"-> (乱码, {len(r.content)} bytes raw)")
+    else:
+        print(f"-> {resp_text}")
 
 def parse_line(line):
     import re
@@ -31,8 +38,7 @@ def parse_line(line):
             moves.append({"face": face, "dir": 1})
             print(f"  {names[face]}'")
         elif suffix == "2":
-            moves.append({"face": face, "dir": 0})
-            moves.append({"face": face, "dir": 0})
+            moves.append({"face": face, "dir": 2})
             print(f"  {names[face]}2")
         elif suffix == '':
             moves.append({"face": face, "dir": 0})
