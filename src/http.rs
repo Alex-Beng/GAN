@@ -96,29 +96,19 @@ pub fn start_http_server(
 
     let queue2 = queue.clone();
     server.fn_handler("/api/moves", Method::Post, move |mut req| {
-        let content_len = req.content_len().unwrap_or(0) as usize;
-        let mut body = Vec::with_capacity(content_len.max(256));
-        let mut buf = [0u8; 256];
+        let mut body = Vec::new();
+        let mut buf = [0u8; 512];
         loop {
-            if content_len > 0 && body.len() >= content_len {
-                break;
-            }
             match req.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => body.extend_from_slice(&buf[..n]),
                 Err(_) => {
-                    if content_len > 0 && body.len() < content_len {
-                        log::warn!("/api/moves read err, got {}/{} bytes, retry", body.len(), content_len);
-                        continue;
-                    }
+                    log::warn!("/api/moves read error after {} bytes", body.len());
                     break;
                 }
             }
         }
-        if content_len > 0 && body.len() < content_len {
-            log::warn!("/api/moves body truncated: got {}/{} bytes", body.len(), content_len);
-        }
-        log::info!("/api/moves body {}/{} bytes", body.len(), content_len);
+        log::info!("/api/moves body {} bytes", body.len());
 
         let resp_text = if let Ok(s) = std::str::from_utf8(&body) {
             let mut results = Vec::new();
