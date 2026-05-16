@@ -27,10 +27,10 @@ cargo espflash flash --monitor --chip esp32c3
 | GET | `/` | Web 控制界面 |
 | POST | `/api/move` | 单步转动 `{"face":0-5,"dir":0-1}` |
 | POST | `/api/moves` | 批量转动 `[{"face":0,"dir":0},...]` |
-| GET | `/api/state` | 获取当前魔方状态 JSON |
+| GET | `/api/state` | 获取当前cubie魔方状态 JSON `{cp: {}, co: {}, ep: {}, eo: {}}` |
 | GET | `/api/facelets` | 获取 kociemba 格式面片字符串 |
 
-## 相关项目
+## 相关项目6
 
 - [MOYU](../MOYU) - 基于 gan-cube-emu 的自动上分项目
 

@@ -3,6 +3,7 @@ mod crypto;
 mod device_config;
 mod http;
 mod protocol;
+mod serial;
 mod wifi;
 
 use std::collections::VecDeque;
@@ -26,6 +27,7 @@ fn main() {
 
     let _wifi = wifi::start_wifi(peripherals.modem, sys_loop, nvs.clone()).unwrap();
     let _server = http::start_http_server(queue.clone(), _wifi.clone(), nvs.clone(), cube_state.clone(), move_delay_ms.clone()).unwrap();
+    serial::run_serial(queue.clone(), cube_state.clone());
     wifi::sta_reconnect_loop(_wifi.clone(), nvs);
 
     esp_idf_svc::hal::task::block_on(ble::run(queue, cube_state, move_delay_ms));

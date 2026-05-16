@@ -139,8 +139,7 @@ fn start_mixed(wifi: &mut BlockingWifi<EspWifi>, ssid: &str, pass: &str) -> anyh
 
     wait_netif_up_poll(|| wifi.wifi().ap_netif().is_netif_up(), 4000);
     log::info!("WiFi Mixed mode started, AP SSID={}", WIFI_AP_SSID);
-    // sleep sometime for STAtion init
-    thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(2000));
 
     for attempt in 1..=STA_MAX_RETRIES {
         log::info!("WiFi STA connecting... attempt {}/{} to {}", attempt, STA_MAX_RETRIES, ssid);

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use esp_idf_svc::http::server::{Configuration, EspHttpServer};
 use esp_idf_svc::http::Method;
 use esp_idf_svc::io::Write;
-use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
+use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs};
 
 use crate::protocol;
 use crate::wifi::{self, SharedWifi};
@@ -94,6 +94,15 @@ pub fn start_http_server(
         Ok::<(), anyhow::Error>(())
     })?;
 
+    server.fn_handler("/api/moves", Method::Options, move |req| {
+        req.into_response(200, Some("OK"), &[
+            ("Access-Control-Allow-Origin", "*"),
+            ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
+            ("Access-Control-Allow-Headers", "Content-Type"),
+        ])?;
+        Ok::<(), anyhow::Error>(())
+    })?;
+
     let queue2 = queue.clone();
     server.fn_handler("/api/moves", Method::Post, move |mut req| {
         let mut body = Vec::new();
@@ -154,7 +163,7 @@ pub fn start_http_server(
 
         log::info!("/api/moves resp: {}", resp_text);
 
-        req.into_ok_response()?
+        req.into_response(200, Some("OK"), &[("Access-Control-Allow-Origin", "*")])?
             .write_all(resp_text.as_bytes())?;
         Ok::<(), anyhow::Error>(())
     })?;
@@ -225,7 +234,7 @@ pub fn start_http_server(
         let f = protocol::to_facelet_string(&cs);
         drop(cs);
         let s = std::str::from_utf8(&f).unwrap_or("UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB");
-        req.into_ok_response()?
+        req.into_response(200, Some("OK"), &[("Access-Control-Allow-Origin", "*")])?
             .write_all(s.as_bytes())?;
         Ok::<(), anyhow::Error>(())
     })?;
