@@ -198,11 +198,28 @@ pub fn start_http_server(
         Ok::<(), anyhow::Error>(())
     })?;
 
+    let wf_ap_off = wf.clone();
+    let nvs_ap_off = nvs.clone();
+    server.fn_handler("/api/wifi/ap/off", Method::Post, move |req| {
+        match wifi::disable_ap(&wf_ap_off, &nvs_ap_off) {
+            Ok(()) => {
+                req.into_ok_response()?
+                    .write_all(b"AP disabled")?;
+            }
+            Err(e) => {
+                req.into_response(500, Some("Error"), &[])?
+                    .write_all(format!("error:{}", e).as_bytes())?;
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    })?;
+
     let wf_status = wf.clone();
     server.fn_handler("/api/wifi/status", Method::Get, move |req| {
-        let (ap_active, sta_connected, ip) = wifi::get_wifi_status(&wf_status);
+        let (mode, ap_active, sta_connected, ip) = wifi::get_wifi_status(&wf_status);
         let json = std::format!(
-            "{{\"ap_active\":{},\"sta_connected\":{},\"ip\":\"{}\"}}",
+            "{{\"mode\":\"{}\",\"ap_active\":{},\"sta_connected\":{},\"ip\":\"{}\"}}",
+            mode,
             ap_active,
             sta_connected,
             ip.unwrap_or_default()

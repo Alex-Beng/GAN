@@ -82,6 +82,7 @@ input { width: 100%; height: 40px; border: 1px solid #ccc; border-radius: 8px; p
 <input id="wifiPass" type="password" placeholder="WiFi 密码" oninput="enableWifiBtn()">
 <button class="btn" id="wifiStaBtn" onclick="switchWifi(false)" disabled>连接局域网</button>
 <button class="btn" style="background:#ff9800;margin-top:4px" onclick="switchWifi(true)">切回热点模式</button>
+<button class="btn" style="background:#e91e63;margin-top:4px" onclick="disableAP()">关闭 AP (降功耗)</button>
 </div>
 
 <div class="section">
@@ -233,7 +234,9 @@ function switchWifi(isAp) {
 function fetchWifiStatus() {
   fetch('/api/wifi/status').then(r => r.json()).then(d => {
     const el = document.getElementById('wifiStatus');
-    let text = 'AP: ' + (d.ap_active ? '✅ 已开启' : '❌ 已关闭');
+    const modeMap = {ap:'热点模式',sta:'局域网模式',mixed:'混合模式',unknown:'未知'};
+    let text = '模式: ' + (modeMap[d.mode]||d.mode);
+    text += ' | AP: ' + (d.ap_active ? '✅' : '❌');
     text += ' | STA: ' + (d.sta_connected ? '✅ 已连接' : '❌ 未连接');
     if (d.ip) text += ' (' + d.ip + ')';
     el.textContent = text;
@@ -243,6 +246,12 @@ function fetchWifiStatus() {
 }
 fetchWifiStatus();
 setInterval(fetchWifiStatus, 5000);
+
+function disableAP() {
+  fetch('/api/wifi/ap/off', {method:'POST'})
+    .then(r => r.text()).then(t => { toast(t); fetchWifiStatus(); })
+    .catch(() => toast('关闭 AP 失败'));
+}
 
 function enableWifiBtn() {
   const ssid = document.getElementById('wifiSsid').value.trim();

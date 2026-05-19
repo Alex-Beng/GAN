@@ -14,6 +14,58 @@ use crate::device_config::{WIFI_AP_PASS, WIFI_AP_SSID};
 
 pub type SharedWifi = Arc<Mutex<BlockingWifi<EspWifi<'static>>>>;
 
+pub fn ap_station_count() -> u16 {
+    unsafe {
+        let mut list = core::mem::zeroed::<esp_idf_svc::sys::wifi_sta_list_t>();
+        if esp_idf_svc::sys::esp_wifi_ap_get_sta_list(&mut list as *mut _) == 0 {
+            list.num as u16
+        } else {
+            0
+        }
+    }
+}
+
+pub fn disable_ap(wifi: &SharedWifi, nvs: &EspDefaultNvsPartition) -> anyhow::Result<()> {
+    let cfg = load_sta_config(nvs);
+    let (ssid, pass) = if let Some(ref c) = cfg {
+        (c.ssid.clone(), c.pass.clone())
+    } else {
+        return Ok(());
+    };
+
+    let mut w = wifi.lock().unwrap();
+    w.stop().ok();
+    thread::sleep(Duration::from_millis(500));
+
+    w.set_configuration(&Configuration::Client(sta_config(&ssid, &pass)))?;
+    w.start()?;
+    thread::sleep(Duration::from_millis(500));
+
+    for attempt in 1..=2 {
+        if let Err(e) = w.connect() {
+            log::warn!("STA reconnect attempt {}: {:?}", attempt, e);
+            let _ = w.disconnect();
+            if attempt < 2 {
+                thread::sleep(Duration::from_millis(1000));
+            }
+            continue;
+        }
+        let up = wait_netif_up_poll(|| w.wifi().sta_netif().is_netif_up(), 10000);
+        if up {
+            let ip = w.wifi().sta_netif().get_ip_info().map(|i| i.ip);
+            log::info!("AP disabled, STA-only mode, IP={:?}", ip);
+            return Ok(());
+        }
+        let _ = w.disconnect();
+    }
+
+    log::warn!("STA reconnect failed after AP off, falling back to AP");
+    w.stop().ok();
+    thread::sleep(Duration::from_millis(500));
+    start_ap(&mut w)?;
+    Ok(())
+}
+
 const NVS_KEY_SSID: &str = "sta_ssid";
 const NVS_KEY_PASS: &str = "sta_pass";
 const NVS_NS: &str = "wifi_cfg";
@@ -74,8 +126,15 @@ pub fn start_wifi(
 
     let saved_cfg = load_sta_config(&nvs);
     if let Some(ref cfg) = saved_cfg {
-        log::info!("Found saved STA config: SSID={}", cfg.ssid);
-        start_mixed_with_fallback(&mut wifi, &cfg.ssid, &cfg.pass)?;
+        log::info!("Found saved STA config: SSID={}, trying STA-only first", cfg.ssid);
+        if start_sta_only(&mut wifi, &cfg.ssid, &cfg.pass) {
+            log::info!("STA-only connected, skipping AP for lower power");
+        } else {
+            log::warn!("STA-only failed, switching to Mixed mode");
+            wifi.stop().ok();
+            thread::sleep(Duration::from_millis(500));
+            start_mixed_with_fallback(&mut wifi, &cfg.ssid, &cfg.pass)?;
+        }
     } else {
         log::info!("No saved STA config, starting AP only");
         start_ap(&mut wifi)?;
@@ -133,6 +192,42 @@ fn start_ap(wifi: &mut BlockingWifi<EspWifi>) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn start_sta_only(wifi: &mut BlockingWifi<EspWifi>, ssid: &str, pass: &str) -> bool {
+    if wifi.set_configuration(&Configuration::Client(sta_config(ssid, pass))).is_err() {
+        return false;
+    }
+    if wifi.start().is_err() {
+        return false;
+    }
+
+    for attempt in 1..=STA_MAX_RETRIES {
+        log::info!("STA-only connecting... attempt {}/{} to {}", attempt, STA_MAX_RETRIES, ssid);
+        if let Err(e) = wifi.connect() {
+            log::warn!("connect() failed on attempt {}: {:?}", attempt, e);
+            let _ = wifi.disconnect();
+            if attempt < STA_MAX_RETRIES {
+                thread::sleep(Duration::from_millis(STA_RETRY_DELAY_MS));
+            }
+            continue;
+        }
+
+        let up = wait_netif_up_poll(|| wifi.wifi().sta_netif().is_netif_up(), 10000);
+        if up {
+            let ip = wifi.wifi().sta_netif().get_ip_info().map(|i| i.ip);
+            log::info!("STA-only connected: SSID={}, IP={:?}", ssid, ip);
+            return true;
+        }
+
+        log::warn!("STA netif not up on attempt {}", attempt);
+        let _ = wifi.disconnect();
+        if attempt < STA_MAX_RETRIES {
+            thread::sleep(Duration::from_millis(STA_RETRY_DELAY_MS));
+        }
+    }
+
+    false
+}
+
 fn start_mixed(wifi: &mut BlockingWifi<EspWifi>, ssid: &str, pass: &str) -> anyhow::Result<()> {
     wifi.set_configuration(&Configuration::Mixed(sta_config(ssid, pass), ap_config()))?;
     wifi.start()?;
@@ -185,23 +280,56 @@ fn start_mixed_with_fallback(wifi: &mut BlockingWifi<EspWifi>, ssid: &str, pass:
     }
 }
 
-pub fn get_wifi_status(wifi: &SharedWifi) -> (bool, bool, Option<String>) {
+pub fn get_wifi_status(wifi: &SharedWifi) -> (&str, bool, bool, Option<String>) {
     let w = wifi.lock().unwrap();
     let cfg = w.get_configuration();
-    let ap_active = matches!(cfg, Ok(Configuration::AccessPoint(_)) | Ok(Configuration::Mixed(_, _)));
+    let (mode, ap_active) = match cfg {
+        Ok(Configuration::Mixed(_, _)) => ("mixed", true),
+        Ok(Configuration::AccessPoint(_)) => ("ap", true),
+        Ok(Configuration::Client(_)) => ("sta", false),
+        _ => ("unknown", false),
+    };
     let sta_connected = w.wifi().is_connected().unwrap_or(false);
     let ip = if sta_connected {
         w.wifi().sta_netif().get_ip_info().ok().map(|info| format!("{:?}", info.ip))
     } else {
         None
     };
-    (ap_active, sta_connected, ip)
+    (mode, ap_active, sta_connected, ip)
 }
 
 pub fn sta_reconnect_loop(wifi: SharedWifi, nvs: EspDefaultNvsPartition) {
+    let wifi_ap = wifi.clone();
+    let nvs_ap = nvs.clone();
     thread::spawn(move || {
+        thread::sleep(Duration::from_secs(60));
+        let mut zero_count = 0u8;
         loop {
             thread::sleep(Duration::from_secs(10));
+
+            let is_mixed = {
+                let w = wifi_ap.lock().unwrap();
+                matches!(w.get_configuration(), Ok(Configuration::Mixed(_, _)))
+            };
+            if !is_mixed {
+                break;
+            }
+
+            if ap_station_count() == 0 {
+                zero_count += 1;
+                if zero_count >= 6 {
+                    log::info!("AP idle 60s, disabling AP");
+                    let _ = disable_ap(&wifi_ap, &nvs_ap);
+                    break;
+                }
+            } else {
+                zero_count = 0;
+            }
+        }
+    });
+    thread::spawn(move || {
+        loop {
+            thread::sleep(Duration::from_secs(10));                                                                                                                                              
 
             let is_mixed = {
                 let w = wifi.lock().unwrap();

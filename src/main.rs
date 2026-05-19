@@ -17,6 +17,17 @@ fn main() {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
 
+    unsafe {
+        esp_idf_svc::sys::esp_pm_configure(
+            &esp_idf_svc::sys::esp_pm_config_t {
+                max_freq_mhz: 160,
+                min_freq_mhz: 40,
+                light_sleep_enable: true,
+            } as *const _ as *mut _
+        );
+    }
+    log::info!("Power management: light sleep enabled");
+
     let peripherals = Peripherals::take().unwrap();
     let sys_loop = EspSystemEventLoop::take().unwrap();
     let nvs = EspDefaultNvsPartition::take().unwrap();
