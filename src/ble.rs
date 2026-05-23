@@ -8,6 +8,7 @@ use esp32_nimble::{BLEDevice, NimbleProperties};
 
 use crate::crypto;
 use crate::device_config::*;
+use crate::http::MOVE_FACE_DELAY;
 use crate::protocol;
 
 pub async fn run(queue: Arc<Mutex<VecDeque<(u8, u8)>>>, cube_state: Arc<Mutex<protocol::CubeState>>, move_delay_ms: Arc<Mutex<u64>>) {
@@ -207,6 +208,13 @@ pub async fn run(queue: Arc<Mutex<VecDeque<(u8, u8)>>>, cube_state: Arc<Mutex<pr
             Timer::after(Duration::from_millis(100)).await;
             continue;
         };
+
+        if face == MOVE_FACE_DELAY {
+            let delay = dir as u64;
+            *move_delay_ms.lock().unwrap() = delay;
+            log::info!("BLE delay set to {}ms", delay);
+            continue;
+        }
 
         let names = ["U", "R", "F", "D", "L", "B"];
         let dir_str = if dir == 0 { "" } else { "'" };

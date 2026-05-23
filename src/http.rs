@@ -15,6 +15,64 @@ const NVS_NS_HTTP: &str = "http_cfg";
 const NVS_KEY_DELAY: &str = "move_delay";
 const DEFAULT_DELAY_MS: u64 = 50;
 
+pub const MOVE_FACE_DELAY: u8 = 99;
+
+pub fn parse_move_notation(s: &str) -> Option<(u8, u8)> {
+    let s = s.trim();
+    if s.is_empty() { return None; }
+    let face_char = s.chars().next()?;
+    let face = match face_char {
+        'U' | 'u' => 0, 'R' | 'r' => 1, 'F' | 'f' => 2,
+        'D' | 'd' => 3, 'L' | 'l' => 4, 'B' | 'b' => 5,
+        _ => return None,
+    };
+    let rest = &s[face_char.len_utf8()..];
+    if rest.is_empty() {
+        Some((face, 0))
+    } else if rest == "'" || rest == "\u{2019}" {
+        Some((face, 1))
+    } else if rest == "2" {
+        Some((face, 2))
+    } else {
+        None
+    }
+}
+
+pub fn parse_move_item(s: &str) -> Option<(u8, u8)> {
+    if let Some(v) = parse_json_u8(s, "delay") {
+        if v > 0 { return Some((MOVE_FACE_DELAY, v)); }
+    }
+    if let Some(name) = parse_json_str(s, "move") {
+        return parse_move_notation(name);
+    }
+    let face = parse_json_u8(s, "face");
+    let dir = parse_json_u8(s, "dir");
+    match (face, dir) {
+        (Some(f), Some(d)) => Some((f, d)),
+        _ => None,
+    }
+}
+
+pub fn push_move_or_delay(queue: &mut VecDeque<(u8, u8)>, f: u8, d: u8) -> String {
+    if f == MOVE_FACE_DELAY {
+        queue.push_back((f, d));
+        std::format!("delay={}", d)
+    } else if f < 6 && d < 3 {
+        let names = ["U", "R", "F", "D", "L", "B"];
+        if d == 2 {
+            queue.push_back((f, 0));
+            queue.push_back((f, 0));
+            std::format!("{}2", names[f as usize])
+        } else {
+            queue.push_back((f, d));
+            let dir_str = if d == 0 { "" } else { "'" };
+            std::format!("{}{}", names[f as usize], dir_str)
+        }
+    } else {
+        "invalid".to_string()
+    }
+}
+
 pub fn load_move_delay(nvs: &EspDefaultNvsPartition) -> u64 {
     let Ok(ns) = EspNvs::new(nvs.clone(), NVS_NS_HTTP, false) else { return DEFAULT_DELAY_MS; };
     let mut buf = [0u8; 8];
@@ -58,32 +116,35 @@ pub fn start_http_server(
             }
         }
 
-        let face;
-        let dir;
-        if let Ok(s) = std::str::from_utf8(&body) {
+        let resp_text = if let Ok(s) = std::str::from_utf8(&body) {
             log::info!("/api/move body ({} bytes): {}", s.len(), s);
-            face = parse_json_u8(s, "face");
-            dir = parse_json_u8(s, "dir");
-        } else {
-            face = None;
-            dir = None;
-        }
-
-        let resp_text = if let (Some(f), Some(d)) = (face, dir) {
-            if f < 6 && d < 3 {
-                let names = ["U", "R", "F", "D", "L", "B"];
-                if d == 2 {
-                    // Double move: push two CW turns
-                    queue1.lock().unwrap().push_back((f, 0));
-                    queue1.lock().unwrap().push_back((f, 0));
-                    std::format!("{}2", names[f as usize])
+            if let Some(name) = parse_json_str(s, "move") {
+                if let Some((f, d)) = parse_move_notation(name) {
+                    push_move_or_delay(&mut queue1.lock().unwrap(), f, d)
                 } else {
-                    queue1.lock().unwrap().push_back((f, d));
-                    let dir_str = if d == 0 { "" } else { "'" };
-                    std::format!("{}{}", names[f as usize], dir_str)
+                    "bad request".to_string()
                 }
             } else {
-                "invalid".to_string()
+                let face = parse_json_u8(s, "face");
+                let dir = parse_json_u8(s, "dir");
+                if let (Some(f), Some(d)) = (face, dir) {
+                    if f < 6 && d < 3 {
+                        let names = ["U", "R", "F", "D", "L", "B"];
+                        if d == 2 {
+                            queue1.lock().unwrap().push_back((f, 0));
+                            queue1.lock().unwrap().push_back((f, 0));
+                            std::format!("{}2", names[f as usize])
+                        } else {
+                            queue1.lock().unwrap().push_back((f, d));
+                            let dir_str = if d == 0 { "" } else { "'" };
+                            std::format!("{}{}", names[f as usize], dir_str)
+                        }
+                    } else {
+                        "invalid".to_string()
+                    }
+                } else {
+                    "bad request".to_string()
+                }
             }
         } else {
             "bad request".to_string()
@@ -127,12 +188,14 @@ pub fn start_http_server(
                 if let Some(end) = s[abs_start..].find("}") {
                     let obj = &s[abs_start..abs_start + end + 1];
                     let face = parse_json_u8(obj, "face");
-                    let dir = parse_json_u8(obj, "dir");
-                    if let (Some(f), Some(d)) = (face, dir) {
+                    let dir_val = parse_json_u8(obj, "dir");
+                    let delay = parse_json_u8(obj, "delay");
+                    let move_name = parse_json_str(obj, "move");
+
+                    if let (Some(f), Some(d)) = (face, dir_val) {
                         if f < 6 && d < 3 {
                             let names = ["U", "R", "F", "D", "L", "B"];
                             if d == 2 {
-                                // Double move: push two CW turns
                                 queue2.lock().unwrap().push_back((f, 0));
                                 queue2.lock().unwrap().push_back((f, 0));
                                 results.push(std::format!("{}2", names[f as usize]));
@@ -143,6 +206,32 @@ pub fn start_http_server(
                             }
                         } else {
                             results.push("invalid".to_string());
+                        }
+                    } else if let Some(ms) = delay {
+                        if ms > 0 {
+                            queue2.lock().unwrap().push_back((MOVE_FACE_DELAY, ms));
+                            results.push(std::format!("delay={}", ms));
+                        } else {
+                            results.push("bad request".to_string());
+                        }
+                    } else if let Some(name) = move_name {
+                        if let Some((f, d)) = parse_move_notation(name) {
+                            if f < 6 && d < 3 {
+                                let names = ["U", "R", "F", "D", "L", "B"];
+                                if d == 2 {
+                                    queue2.lock().unwrap().push_back((f, 0));
+                                    queue2.lock().unwrap().push_back((f, 0));
+                                    results.push(std::format!("{}2", names[f as usize]));
+                                } else {
+                                    queue2.lock().unwrap().push_back((f, d));
+                                    let dir_str = if d == 0 { "" } else { "'" };
+                                    results.push(std::format!("{}{}", names[f as usize], dir_str));
+                                }
+                            } else {
+                                results.push("invalid".to_string());
+                            }
+                        } else {
+                            results.push("bad request".to_string());
                         }
                     } else {
                         results.push("bad request".to_string());

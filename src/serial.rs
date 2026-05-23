@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crate::http;
 use crate::protocol;
 
 fn serial_write(data: &[u8]) {
@@ -109,23 +110,11 @@ fn process_command(
             let abs_start = pos + start;
             if let Some(end) = cmd[abs_start..].find('}') {
                 let obj = &cmd[abs_start..abs_start + end + 1];
-                let face = parse_json_u8(obj, "face");
-                let dir = parse_json_u8(obj, "dir");
-                if let (Some(f), Some(d)) = (face, dir) {
-                    if f < 6 && d < 3 {
-                        let names = ["U", "R", "F", "D", "L", "B"];
-                        if d == 2 {
-                            queue.lock().unwrap().push_back((f, 0));
-                            queue.lock().unwrap().push_back((f, 0));
-                            results.push(format!("{}2", names[f as usize]));
-                        } else {
-                            queue.lock().unwrap().push_back((f, d));
-                            let dir_str = if d == 0 { "" } else { "'" };
-                            results.push(format!("{}{}", names[f as usize], dir_str));
-                        }
-                    } else {
-                        results.push("invalid".to_string());
-                    }
+                if let Some((f, d)) = http::parse_move_item(obj) {
+                    let r = http::push_move_or_delay(&mut queue.lock().unwrap(), f, d);
+                    results.push(r);
+                } else {
+                    results.push("bad request".to_string());
                 }
                 pos = abs_start + end + 1;
             } else {

@@ -22,11 +22,11 @@ fn main() {
             &esp_idf_svc::sys::esp_pm_config_t {
                 max_freq_mhz: 160,
                 min_freq_mhz: 40,
-                light_sleep_enable: true,
+                light_sleep_enable: false,
             } as *const _ as *mut _
         );
     }
-    log::info!("Power management: light sleep enabled");
+    log::info!("Power management: dynamic freq 160/40MHz enabled");
 
     let peripherals = Peripherals::take().unwrap();
     let sys_loop = EspSystemEventLoop::take().unwrap();
