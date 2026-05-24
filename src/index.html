@@ -29,10 +29,14 @@ input { width: 100%; height: 40px; border: 1px solid #ccc; border-radius: 8px; p
 .cell { width: 26px; height: 26px; border: 1px solid rgba(0,0,0,0.15); }
 .color-U { background: #fff; } .color-R { background: #c41e3a; } .color-F { background: #009e60; }
 .color-D { background: #ffd500; } .color-L { background: #ff5800; } .color-B { background: #0051ba; }
+.temp-badge { display: inline-block; background: #607d8b; color: #fff; padding: 2px 12px; border-radius: 10px; font-size: 13px; margin-left: 8px; }
+.temp-chart { width: 100%; max-width: 380px; height: 60px; border-radius: 8px; }
 </style>
 </head>
 <body>
-<h2>魔方控制</h2>
+<h2>魔方控制<span id="tempBadge" class="temp-badge">--°C</span></h2>
+<svg id="tempChart" class="temp-chart" viewBox="0 0 380 60" style="display:none"><polyline id="tempLine" fill="none" stroke="#2196f3" stroke-width="2"/><text id="tempLabel" x="2" y="12" font-size="9" fill="#999">--°C</text></svg>
+<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px"><span style="font-size:12px;color:#999">刷新间隔</span><select id="tempInterval" onchange="changeTempInterval()" style="height:28px;border-radius:6px;border:1px solid #ccc;font-size:13px"><option value="5">5s</option><option value="10" selected>10s</option><option value="30">30s</option><option value="60">60s</option></select></div>
 <div id="toast" class="toast"></div>
 
 <div class="section">
@@ -273,6 +277,67 @@ fetch('/api/delay').then(r=>r.json()).then(j=>{
   document.getElementById('delaySlider').value=j.delay;
   document.getElementById('delayInput').value=j.delay;
 });
+
+let tempTimer = null;
+let tempHistory = [];
+const TEMP_MAX_POINTS = 120;
+function getTempInterval() { return parseInt(document.getElementById('tempInterval').value) * 1000; }
+function fetchTemp() {
+  fetch('/api/temp').then(r => r.json()).then(j => {
+    const el = document.getElementById('tempBadge');
+    if (j.celsius != null) {
+      const c = j.celsius.toFixed(1);
+      const color = c < 30 ? '#4caf50' : c < 45 ? '#ff9800' : '#f44336';
+      el.textContent = c + '°C';
+      el.style.background = color;
+      tempHistory.push(j.celsius);
+      if (tempHistory.length > TEMP_MAX_POINTS) tempHistory.shift();
+      drawTempChart();
+    } else {
+      el.textContent = '--°C';
+      el.style.background = '#607d8b';
+    }
+  }).catch(() => {
+    document.getElementById('tempBadge').textContent = '--°C';
+  });
+}
+function changeTempInterval() {
+  stopTempPoll();
+  startTempPoll();
+}
+function startTempPoll() {
+  fetchTemp();
+  if (tempTimer) clearInterval(tempTimer);
+  tempTimer = setInterval(fetchTemp, getTempInterval());
+}
+function drawTempChart() {
+  const svg = document.getElementById('tempChart');
+  if (tempHistory.length < 2) { svg.style.display = 'none'; return; }
+  svg.style.display = '';
+  const poly = document.getElementById('tempLine');
+  const w = 380, h = 50, padY = 8, padX = 0;
+  const minT = Math.min(...tempHistory), maxT = Math.max(...tempHistory);
+  const range = Math.max(maxT - minT, 1);
+  const n = tempHistory.length;
+  const xStep = (w - padX * 2) / (n - 1);
+  let points = '';
+  for (let i = 0; i < n; i++) {
+    const x = padX + i * xStep;
+    const y = padY + h - 1 - ((tempHistory[i] - minT) / range) * (h - padY * 2);
+    points += (i ? ' ' : '') + x.toFixed(1) + ',' + y.toFixed(1);
+  }
+  poly.setAttribute('points', points);
+  const label = document.getElementById('tempLabel');
+  label.textContent = maxT.toFixed(1) + '°C / ';
+  label.textContent += minT.toFixed(1) + '°C';
+}
+function stopTempPoll() {
+  if (tempTimer) { clearInterval(tempTimer); tempTimer = null; }
+}
+document.addEventListener('visibilitychange', () => {
+  document.hidden ? stopTempPoll() : startTempPoll();
+});
+startTempPoll();
 </script>
 </body>
 </html>

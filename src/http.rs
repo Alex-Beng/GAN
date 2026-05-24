@@ -9,6 +9,52 @@ use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs};
 use crate::protocol;
 use crate::wifi::{self, SharedWifi};
 
+struct CpuTemp {
+    handle: esp_idf_svc::sys::temperature_sensor_handle_t,
+}
+
+unsafe impl Send for CpuTemp {}
+unsafe impl Sync for CpuTemp {}
+
+impl CpuTemp {
+    fn new() -> anyhow::Result<Self> {
+        let config = esp_idf_svc::sys::temperature_sensor_config_t {
+            range_min: -10,
+            range_max: 80,
+            clk_src: esp_idf_svc::sys::soc_periph_temperature_sensor_clk_src_t_TEMPERATURE_SENSOR_CLK_SRC_DEFAULT,
+            flags: esp_idf_svc::sys::temperature_sensor_config_t__bindgen_ty_1 { allow_pd: 0 },
+        };
+        let mut handle: esp_idf_svc::sys::temperature_sensor_handle_t = core::ptr::null_mut();
+        let ret = unsafe { esp_idf_svc::sys::temperature_sensor_install(&config, &mut handle) };
+        if ret != 0 {
+            anyhow::bail!("temperature_sensor_install failed: {}", ret);
+        }
+        let ret = unsafe { esp_idf_svc::sys::temperature_sensor_enable(handle) };
+        if ret != 0 {
+            anyhow::bail!("temperature_sensor_enable failed: {}", ret);
+        }
+        Ok(Self { handle })
+    }
+
+    fn get_celsius(&self) -> anyhow::Result<f32> {
+        let mut temp: f32 = 0.0;
+        let ret = unsafe { esp_idf_svc::sys::temperature_sensor_get_celsius(self.handle, &mut temp) };
+        if ret != 0 {
+            anyhow::bail!("get_celsius failed: {}", ret);
+        }
+        Ok(temp)
+    }
+}
+
+impl Drop for CpuTemp {
+    fn drop(&mut self) {
+        unsafe {
+            esp_idf_svc::sys::temperature_sensor_disable(self.handle);
+            esp_idf_svc::sys::temperature_sensor_uninstall(self.handle);
+        }
+    }
+}
+
 static INDEX_HTML: &str = include_str!("index.html");
 
 const NVS_NS_HTTP: &str = "http_cfg";
@@ -97,6 +143,14 @@ pub fn start_http_server(
     move_delay_ms: Arc<Mutex<u64>>,
 ) -> anyhow::Result<EspHttpServer<'static>> {
     let mut server = EspHttpServer::new(&Configuration::default())?;
+
+    let temp_sensor = match CpuTemp::new() {
+        Ok(t) => Some(Arc::new(Mutex::new(t))),
+        Err(e) => {
+            log::warn!("Temperature sensor init failed: {}, temp API disabled", e);
+            None
+        }
+    };
 
     server.fn_handler("/", Method::Get, |req| {
         req.into_ok_response()?
@@ -352,6 +406,23 @@ pub fn start_http_server(
         drop(cs);
         req.into_ok_response()?
             .write_all(b"reset")?;
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    let temp_ref = temp_sensor.clone();
+    server.fn_handler("/api/temp", Method::Get, move |req| {
+        let json = match temp_ref.as_ref() {
+            Some(arc) => match arc.lock() {
+                Ok(guard) => match guard.get_celsius() {
+                    Ok(c) => std::format!("{{\"celsius\":{:.1}}}", c),
+                    Err(_) => "{\"error\":\"read failed\"}".to_string(),
+                },
+                Err(_) => "{\"error\":\"lock failed\"}".to_string(),
+            },
+            None => "{\"error\":\"sensor not available\"}".to_string(),
+        };
+        req.into_ok_response()?
+            .write_all(json.as_bytes())?;
         Ok::<(), anyhow::Error>(())
     })?;
 
