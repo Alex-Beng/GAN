@@ -462,6 +462,18 @@ pub fn start_http_server(
         Ok::<(), anyhow::Error>(())
     })?;
 
+    let queue3 = queue.clone();
+    server.fn_handler("/api/moves/clear", Method::Post, move |req| {
+        let mut q = queue3.lock().unwrap();
+        let count = q.len();
+        q.clear();
+        drop(q);
+        log::info!("/api/moves/clear: cleared {} moves", count);
+        req.into_ok_response()?
+            .write_all(std::format!("{{\"cleared\":{}}}", count).as_bytes())?;
+        Ok::<(), anyhow::Error>(())
+    })?;
+
     Ok(server)
 }
 

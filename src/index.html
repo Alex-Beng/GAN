@@ -76,7 +76,10 @@ input { width: 100%; height: 40px; border: 1px solid #ccc; border-radius: 8px; p
 <h3>批量转动</h3>
 <div class="seq" id="seqDisplay">当前序列: (空)</div>
 <input id="seqInput" placeholder="输入序列如 R U R' U'" oninput="parseSeq()">
-<button class="btn" id="seqBtn" onclick="execSeq()" disabled>执行序列</button>
+<div style="display:flex;gap:8px">
+<button class="btn" id="seqBtn" onclick="execSeq()" disabled style="flex:1">执行序列</button>
+<button class="btn" onclick="clearMoves()" style="flex:1;background:#e91e63">清除队列</button>
+</div>
 </div>
 
 <div class="section">
@@ -216,6 +219,12 @@ function execSeq() {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(parsedMoves)
   }).then(r => r.text()).then(t => { toast(t); document.getElementById('seqInput').value = ''; parseSeq(); fetchFacelets(); }).catch(() => toast('错误'));
+}
+
+function clearMoves() {
+  fetch('/api/moves/clear', {method:'POST'})
+    .then(r => r.json()).then(j => toast('已清除 ' + j.cleared + ' 个指令'))
+    .catch(() => toast('清除失败'));
 }
 
 function resetCube() {
