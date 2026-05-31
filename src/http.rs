@@ -62,6 +62,7 @@ const NVS_KEY_DELAY: &str = "move_delay";
 const DEFAULT_DELAY_MS: u64 = 50;
 
 pub const MOVE_FACE_DELAY: u8 = 99;
+pub const MOVE_FACE_TIME: u8 = 100;
 
 pub fn parse_move_notation(s: &str) -> Option<(u8, u8)> {
     let s = s.trim();
@@ -85,6 +86,12 @@ pub fn parse_move_notation(s: &str) -> Option<(u8, u8)> {
 }
 
 pub fn parse_move_item(s: &str) -> Option<(u8, u8)> {
+    if let Some(v) = parse_json_u64(s, "time") {
+        if v > 0 {
+            let d = ((v + 5) / 10).min(255) as u8;
+            return Some((MOVE_FACE_TIME, d));
+        }
+    }
     if let Some(v) = parse_json_u8(s, "delay") {
         if v > 0 { return Some((MOVE_FACE_DELAY, v)); }
     }
@@ -244,6 +251,7 @@ pub fn start_http_server(
                     let face = parse_json_u8(obj, "face");
                     let dir_val = parse_json_u8(obj, "dir");
                     let delay = parse_json_u8(obj, "delay");
+                    let time_val = parse_json_u64(obj, "time");
                     let move_name = parse_json_str(obj, "move");
 
                     if let (Some(f), Some(d)) = (face, dir_val) {
@@ -260,6 +268,15 @@ pub fn start_http_server(
                             }
                         } else {
                             results.push("invalid".to_string());
+                        }
+                    } else if let Some(ms) = time_val {
+                        if ms > 0 {
+                            let ticks = (ms as u16 + 5) / 10;
+                            let d = ticks.min(255) as u8;
+                            queue2.lock().unwrap().push_back((MOVE_FACE_TIME, d));
+                            results.push(std::format!("time={}", ms));
+                        } else {
+                            results.push("bad request".to_string());
                         }
                     } else if let Some(ms) = delay {
                         if ms > 0 {

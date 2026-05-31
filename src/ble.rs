@@ -8,7 +8,7 @@ use esp32_nimble::{BLEDevice, NimbleProperties};
 
 use crate::crypto;
 use crate::device_config::*;
-use crate::http::MOVE_FACE_DELAY;
+use crate::http::{MOVE_FACE_DELAY, MOVE_FACE_TIME};
 use crate::protocol;
 
 pub async fn run(queue: Arc<Mutex<VecDeque<(u8, u8)>>>, cube_state: Arc<Mutex<protocol::CubeState>>, move_delay_ms: Arc<Mutex<u64>>) {
@@ -209,6 +209,13 @@ pub async fn run(queue: Arc<Mutex<VecDeque<(u8, u8)>>>, cube_state: Arc<Mutex<pr
             continue;
         };
 
+        if face == MOVE_FACE_TIME {
+            let ms = dir as u64 * 10;
+            log::info!("BLE time sleep {}ms", ms);
+            Timer::after(Duration::from_millis(ms)).await;
+            continue;
+        }
+
         if face == MOVE_FACE_DELAY {
             let delay = dir as u64;
             *move_delay_ms.lock().unwrap() = delay;
@@ -246,13 +253,7 @@ pub async fn run(queue: Arc<Mutex<VecDeque<(u8, u8)>>>, cube_state: Arc<Mutex<pr
         crypto::encrypt_msg(&mut move_msg, &key_loop, &iv_loop);
         state_char_loop.lock().set_value(&move_msg).notify();
 
-        let delay = {
-            let base = *move_delay_ms.lock().unwrap();
-            let q = queue.lock().unwrap();
-            if q.len() > 20 { base.min(100) }
-            else if q.len() > 5 { base }
-            else { base }
-        };
+        let delay = *move_delay_ms.lock().unwrap();
         Timer::after(Duration::from_millis(delay)).await;
 
         let cs = cube_state_loop.lock().unwrap();
