@@ -6,6 +6,7 @@ use esp_idf_svc::http::Method;
 use esp_idf_svc::io::Write;
 use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs};
 
+use crate::device_config::Protocol;
 use crate::protocol;
 use crate::wifi::{self, SharedWifi};
 
@@ -148,6 +149,7 @@ pub fn start_http_server(
     nvs: EspDefaultNvsPartition,
     cube_state: Arc<Mutex<protocol::CubeState>>,
     move_delay_ms: Arc<Mutex<u64>>,
+    protocol: Arc<Mutex<Protocol>>,
 ) -> anyhow::Result<EspHttpServer<'static>> {
     let mut server = EspHttpServer::new(&Configuration::default())?;
 
@@ -426,6 +428,14 @@ pub fn start_http_server(
         Ok::<(), anyhow::Error>(())
     })?;
 
+    server.fn_handler("/api/freq", Method::Get, move |req| {
+        let mhz = unsafe { esp_idf_svc::sys::ets_get_cpu_frequency() };
+        let json = std::format!("{{\"mhz\":{}}}", mhz);
+        req.into_ok_response()?
+            .write_all(json.as_bytes())?;
+        Ok::<(), anyhow::Error>(())
+    })?;
+
     let temp_ref = temp_sensor.clone();
     server.fn_handler("/api/temp", Method::Get, move |req| {
         let json = match temp_ref.as_ref() {
@@ -488,6 +498,41 @@ pub fn start_http_server(
         log::info!("/api/moves/clear: cleared {} moves", count);
         req.into_ok_response()?
             .write_all(std::format!("{{\"cleared\":{}}}", count).as_bytes())?;
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    let proto_get = protocol.clone();
+    server.fn_handler("/api/protocol", Method::Get, move |req| {
+        let p = *proto_get.lock().unwrap();
+        let json = std::format!("{{\"protocol\":\"{:?}\",\"index\":{}}}", p, p as u8);
+        req.into_ok_response()?
+            .write_all(json.as_bytes())?;
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    let proto_set = protocol.clone();
+    let nvs_proto = nvs.clone();
+    server.fn_handler("/api/protocol", Method::Post, move |mut req| {
+        let mut body = Vec::new();
+        let mut buf = [0u8; 64];
+        loop {
+            match req.read(&mut buf) {
+                Ok(0) => { break; }
+                Ok(n) => { body.extend_from_slice(&buf[..n]); }
+                Err(_) => { break; }
+            }
+        }
+        let resp = if let Ok(s) = std::str::from_utf8(&body) {
+            if let Some(idx) = parse_json_u8(s, "index") {
+                if let Some(p) = Protocol::from_index(idx) {
+                    *proto_set.lock().unwrap() = p;
+                    crate::save_protocol(&nvs_proto, p);
+                    std::format!("{{\"protocol\":\"{:?}\"}}", p)
+                } else { "{\"error\":\"invalid index\"}".to_string() }
+            } else { "{\"error\":\"bad request\"}".to_string() }
+        } else { "{\"error\":\"bad request\"}".to_string() };
+        req.into_ok_response()?
+            .write_all(resp.as_bytes())?;
         Ok::<(), anyhow::Error>(())
     })?;
 

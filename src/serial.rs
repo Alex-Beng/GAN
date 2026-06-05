@@ -25,15 +25,6 @@ fn serial_write(data: &[u8]) {
     }
 }
 
-fn parse_json_u8(s: &str, key: &str) -> Option<u8> {
-    let search = format!("\"{}\"", key);
-    let pos = s.find(&search)?;
-    let after = &s[pos + search.len()..];
-    let after = after.trim_start_matches(|c: char| c == ':' || c == ' ');
-    let end = after.find(|c: char| !c.is_ascii_digit()).unwrap_or(after.len());
-    after[..end].parse().ok()
-}
-
 pub fn run_serial(
     queue: Arc<Mutex<VecDeque<(u8, u8)>>>,
     cube_state: Arc<Mutex<protocol::CubeState>>,
