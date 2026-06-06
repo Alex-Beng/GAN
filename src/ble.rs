@@ -237,6 +237,7 @@ pub async fn run(
     let key_loop = key.clone();
     let iv_loop = iv.clone();
     let cube_state_loop = cube_state.clone();
+    let connected_loop = connected.clone();
     let mut move_history: std::collections::VecDeque<(u8, u8, u16)> = std::collections::VecDeque::new();
     let mut last_move_time = embassy_time::Instant::now();
     let cube_start = embassy_time::Instant::now();
@@ -314,15 +315,19 @@ pub async fn run(
 
         let mut move_msg = protocol::build_move(current_proto, serial, &history, cube_time);
         ble_encrypt(current_proto, &mut move_msg, &key_loop, &iv_loop);
-        state_char_loop.lock().set_value(&move_msg).notify();
+        if *connected_loop.lock().unwrap() {
+            state_char_loop.lock().set_value(&move_msg).notify();
+        }
 
-        let delay = *move_delay_ms.lock().unwrap();
+        let delay = (*move_delay_ms.lock().unwrap()).max(1);
         Timer::after(Duration::from_millis(delay)).await;
 
         let cs = cube_state_loop.lock().unwrap();
         let mut facelets_msg = protocol::build_facelets(current_proto, serial, &cs);
         drop(cs);
         ble_encrypt(current_proto, &mut facelets_msg, &key_loop, &iv_loop);
-        state_char_loop.lock().set_value(&facelets_msg).notify();
+        if *connected_loop.lock().unwrap() {
+            state_char_loop.lock().set_value(&facelets_msg).notify();
+        }
     }
 }
