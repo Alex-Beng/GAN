@@ -171,7 +171,8 @@ pub fn build_facelets(proto: Protocol, serial: u16, state: &CubeState) -> Vec<u8
         Protocol::QiYi => {
             let fb = &build_facelets_qiyi(state);
             let fb_packed = &pack_facelets_nibble(fb);
-            let payload = build_full_qiyi(fb_packed, serial, 80);
+            let mac = crate::device_config::get_config(Protocol::QiYi).mac;
+            let payload = build_full_qiyi(fb_packed, serial, 80, mac);
             qiyi_frame(&payload)
         }
     }
@@ -216,7 +217,8 @@ pub fn build_hardware_single(proto: Protocol) -> Vec<u8> {
         Protocol::MoYu32 => build_hardware_moyu32(),
         Protocol::QiYi => {
             let dummy_fb = vec![0u8; 54];
-            let payload = build_full_qiyi(&dummy_fb, 0, 80);
+            let mac = crate::device_config::get_config(Protocol::QiYi).mac;
+            let payload = build_full_qiyi(&dummy_fb, 0, 80, mac);
             qiyi_frame(&payload)
         }
     }
@@ -297,7 +299,8 @@ pub fn build_battery(proto: Protocol, level: u8) -> Vec<u8> {
         Protocol::MoYu32 => build_battery_moyu32(level),
         Protocol::QiYi => {
             let dummy_fb = vec![0u8; 54];
-            let payload = build_full_qiyi(&dummy_fb, 0, level);
+            let mac = crate::device_config::get_config(Protocol::QiYi).mac;
+            let payload = build_full_qiyi(&dummy_fb, 0, level, mac);
             qiyi_frame(&payload)
         }
     }
@@ -721,8 +724,8 @@ pub fn reverse_slice(data: &[u8]) -> Vec<u8> {
     v
 }
 
-pub fn build_full_qiyi(facelets: &[u8], serial: u16, battery: u8) -> Vec<u8> {
-    let mac_bytes = reverse_slice(&crate::device_config::SHARED_MAC);
+pub fn build_full_qiyi(facelets: &[u8], serial: u16, battery: u8, mac: &[u8; 6]) -> Vec<u8> {
+    let mac_bytes = reverse_slice(mac);
     let mut payload: Vec<u8> = vec![
         0x02, 0x6b, 0x01, 0x00, 0x00, serial as u8, 0x22, 0x06,
     ];

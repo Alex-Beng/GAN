@@ -527,6 +527,14 @@ pub fn start_http_server(
                 if let Some(p) = Protocol::from_index(idx) {
                     *proto_set.lock().unwrap() = p;
                     crate::save_protocol(&nvs_proto, p);
+                    // Pre-set BT MAC for the upcoming BLE restart
+                    let cfg = crate::device_config::get_config(p);
+                    unsafe {
+                        esp_idf_svc::sys::esp_iface_mac_addr_set(
+                            cfg.mac.as_ptr(),
+                            esp_idf_svc::sys::esp_mac_type_t_ESP_MAC_BT,
+                        );
+                    }
                     std::format!("{{\"protocol\":\"{:?}\"}}", p)
                 } else { "{\"error\":\"invalid index\"}".to_string() }
             } else { "{\"error\":\"bad request\"}".to_string() }

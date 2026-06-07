@@ -47,6 +47,7 @@ pub struct ProtoCfg {
     #[allow(dead_code)]
     pub proto: Protocol,
     pub device_name: &'static str,
+    pub mac: &'static [u8; 6],
     pub service_uuid: &'static str,
     pub cmd_uuid: &'static str,
     pub state_uuid: &'static str,
@@ -64,7 +65,12 @@ pub struct ProtoCfg {
 pub const WIFI_AP_SSID: &str = "GanCubeEmu";
 pub const WIFI_AP_PASS: &str = "";
 
-pub const SHARED_MAC: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xCA];
+const MAC_GEN2: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xCA];
+const MAC_GEN3: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xCB];
+const MAC_GEN4: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xCC];
+const MAC_GAN251: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xCD];
+const MAC_MOYU32: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xCE];
+const MAC_QIYI: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xCF];
 
 const C_OTA_VERSION: &[u8; 16] = b"1.0.0\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
 const C_MFR_EXTRA: &[u8; 3] = &[0x00, 0x00, 0x00];
@@ -103,6 +109,7 @@ const C_IV_GAN251: [u8; 16] = [
 const CFG_GEN2: ProtoCfg = ProtoCfg {
     proto: Protocol::Gen2,
     device_name: "GANi3SB",
+    mac: &MAC_GEN2,
     service_uuid: "6e400001-b5a3-f393-e0a9-e50e24dc4179",
     cmd_uuid: "28be4a4a-cd67-11e9-a32f-2a2ae2dbcce4",
     state_uuid: "28be4cb6-cd67-11e9-a32f-2a2ae2dbcce4",
@@ -120,6 +127,7 @@ const CFG_GEN2: ProtoCfg = ProtoCfg {
 const CFG_GEN3: ProtoCfg = ProtoCfg {
     proto: Protocol::Gen3,
     device_name: "GAN12UI",
+    mac: &MAC_GEN3,
     service_uuid: "8653000a-43e6-47b7-9cb0-5fc21d4ae340",
     cmd_uuid: "8653000c-43e6-47b7-9cb0-5fc21d4ae340",
     state_uuid: "8653000b-43e6-47b7-9cb0-5fc21d4ae340",
@@ -137,6 +145,7 @@ const CFG_GEN3: ProtoCfg = ProtoCfg {
 const CFG_GEN4: ProtoCfg = ProtoCfg {
     proto: Protocol::Gen4,
     device_name: "GAN15UI",
+    mac: &MAC_GEN4,
     service_uuid: "00000010-0000-fff7-fff6-fff5fff4fff0",
     cmd_uuid: "0000fff5-0000-1000-8000-00805f9b34fb",
     state_uuid: "0000fff6-0000-1000-8000-00805f9b34fb",
@@ -154,6 +163,7 @@ const CFG_GEN4: ProtoCfg = ProtoCfg {
 const CFG_GAN251: ProtoCfg = ProtoCfg {
     proto: Protocol::Gan251,
     device_name: "GAN251Ui_SB",
+    mac: &MAC_GAN251,
     service_uuid: "00000010-0000-fff7-fff6-fff5fff4fff0",
     cmd_uuid: "0000fff5-0000-1000-8000-00805f9b34fb",
     state_uuid: "0000fff6-0000-1000-8000-00805f9b34fb",
@@ -171,6 +181,7 @@ const CFG_GAN251: ProtoCfg = ProtoCfg {
 const CFG_MOYU32: ProtoCfg = ProtoCfg {
     proto: Protocol::MoYu32,
     device_name: "WCU_MY32_EMU",
+    mac: &MAC_MOYU32,
     service_uuid: "0783b03e-7735-b5a0-1760-a305d2795cb0",
     cmd_uuid: "0783b03e-7735-b5a0-1760-a305d2795cb2",
     state_uuid: "0783b03e-7735-b5a0-1760-a305d2795cb1",
@@ -188,6 +199,7 @@ const CFG_MOYU32: ProtoCfg = ProtoCfg {
 const CFG_QIYI: ProtoCfg = ProtoCfg {
     proto: Protocol::QiYi,
     device_name: "QY-QYSC-A-EMU",
+    mac: &MAC_QIYI,
     service_uuid: "0000fff0-0000-1000-8000-00805f9b34fb",
     cmd_uuid: "0000fff6-0000-1000-8000-00805f9b34fb",
     state_uuid: "0000fff6-0000-1000-8000-00805f9b34fb",
