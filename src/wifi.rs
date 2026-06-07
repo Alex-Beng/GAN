@@ -329,13 +329,14 @@ pub fn sta_reconnect_loop(wifi: SharedWifi, nvs: EspDefaultNvsPartition) {
     });
     thread::spawn(move || {
         loop {
-            thread::sleep(Duration::from_secs(10));                                                                                                                                              
+            thread::sleep(Duration::from_secs(10));
 
-            let is_mixed = {
+            let is_sta = {
                 let w = wifi.lock().unwrap();
-                matches!(w.get_configuration(), Ok(Configuration::Mixed(_, _)))
+                matches!(w.get_configuration(),
+                    Ok(Configuration::Mixed(_, _)) | Ok(Configuration::Client(_)))
             };
-            if !is_mixed {
+            if !is_sta {
                 continue;
             }
 
