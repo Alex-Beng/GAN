@@ -391,6 +391,88 @@ pub fn start_http_server(
         Ok::<(), anyhow::Error>(())
     })?;
 
+    let wf_scan = wf.clone();
+    server.fn_handler("/api/wifi/scan", Method::Get, move |req| {
+        let json = wifi::scan_and_format_json(&wf_scan).unwrap_or_else(|e| std::format!("{{\"error\":\"{}\"}}", e));
+        req.into_ok_response()?
+            .write_all(json.as_bytes())?;
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    let nvs_saved = nvs.clone();
+    server.fn_handler("/api/wifi/saved", Method::Get, move |req| {
+        let saved = wifi::load_all_sta_configs(&nvs_saved);
+        let mut json = String::from("{\"saved\":[");
+        for (i, net) in saved.iter().enumerate() {
+            if i > 0 { json.push(','); }
+            json.push_str(&std::format!("{{\"ssid\":\"{}\"}}", net.ssid));
+        }
+        json.push_str("]}");
+        req.into_ok_response()?
+            .write_all(json.as_bytes())?;
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    let nvs_saved2 = nvs.clone();
+    server.fn_handler("/api/wifi/saved", Method::Post, move |mut req| {
+        let mut body = Vec::new();
+        let mut buf = [0u8; 256];
+        loop {
+            match req.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => body.extend_from_slice(&buf[..n]),
+                Err(_) => break,
+            }
+        }
+        let resp = if let Ok(s) = std::str::from_utf8(&body) {
+            let ssid = parse_json_str(s, "ssid").unwrap_or("");
+            let pass = parse_json_str(s, "pass").unwrap_or("");
+            if ssid.is_empty() {
+                "{\"error\":\"missing ssid\"}".to_string()
+            } else {
+                match wifi::save_sta_network(&nvs_saved2, ssid, pass) {
+                    Ok(()) => std::format!("{{\"ssid\":\"{}\",\"saved\":true}}", ssid),
+                    Err(e) => std::format!("{{\"error\":\"{}\"}}", e),
+                }
+            }
+        } else {
+            "{\"error\":\"bad request\"}".to_string()
+        };
+        req.into_ok_response()?
+            .write_all(resp.as_bytes())?;
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    let nvs_forget = nvs.clone();
+    server.fn_handler("/api/wifi/saved/forget", Method::Post, move |mut req| {
+        let mut body = Vec::new();
+        let mut buf = [0u8; 128];
+        loop {
+            match req.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => body.extend_from_slice(&buf[..n]),
+                Err(_) => break,
+            }
+        }
+        let resp = if let Ok(s) = std::str::from_utf8(&body) {
+            let ssid = parse_json_str(s, "ssid").unwrap_or("");
+            if ssid.is_empty() {
+                "{\"error\":\"missing ssid\"}".to_string()
+            } else {
+                match wifi::forget_sta_network(&nvs_forget, ssid) {
+                    Ok(true) => std::format!("{{\"ssid\":\"{}\",\"forgotten\":true}}", ssid),
+                    Ok(false) => std::format!("{{\"ssid\":\"{}\",\"forgotten\":false}}", ssid),
+                    Err(e) => std::format!("{{\"error\":\"{}\"}}", e),
+                }
+            }
+        } else {
+            "{\"error\":\"bad request\"}".to_string()
+        };
+        req.into_ok_response()?
+            .write_all(resp.as_bytes())?;
+        Ok::<(), anyhow::Error>(())
+    })?;
+
     let cs_ref = cube_state.clone();
     server.fn_handler("/api/state", Method::Get, move |req| {
         let cs = cs_ref.lock().unwrap();

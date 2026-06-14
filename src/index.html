@@ -87,12 +87,15 @@ input { width: 100%; height: 40px; border: 1px solid #ccc; border-radius: 8px; p
 </div>
 
 <div class="section">
-<h3>WiFi 模式</h3>
+<h3>WiFi 设置</h3>
 <div id="wifiStatus" style="font-size:13px;color:#666;margin-bottom:8px">加载中...</div>
+<div id="savedNetworks" style="font-size:13px;margin-bottom:8px"></div>
+<button class="btn" id="scanBtn" onclick="scanWifi()" style="margin-bottom:8px">扫描 WiFi</button>
+<div id="scanResults" style="font-size:13px;margin-bottom:8px"></div>
 <input id="wifiSsid" placeholder="WiFi 名称 (SSID)" oninput="enableWifiBtn()">
 <input id="wifiPass" type="password" placeholder="WiFi 密码" oninput="enableWifiBtn()">
-<button class="btn" id="wifiStaBtn" onclick="switchWifi(false)" disabled>连接局域网</button>
-<button class="btn" style="background:#ff9800;margin-top:4px" onclick="switchWifi(true)">切回热点模式</button>
+<button class="btn" id="wifiStaBtn" onclick="connectWifi()" disabled>连接局域网</button>
+<button class="btn" style="background:#ff9800;margin-top:4px" onclick="switchToAp()">切回热点模式</button>
 <button class="btn" style="background:#e91e63;margin-top:4px" onclick="disableAP()">关闭 AP (降功耗)</button>
 </div>
 
@@ -237,15 +240,106 @@ function resetCube() {
     .catch(() => toast('错误'));
 }
 
-function switchWifi(isAp) {
-  const ssid = document.getElementById('wifiSsid').value;
+function connectWifi() {
+  const ssid = document.getElementById('wifiSsid').value.trim();
   const pass = document.getElementById('wifiPass').value;
-  const body = isAp ? {ap:1,sta:0,ssid:'',pass:''} : {ap:0,sta:1,ssid,pass};
+  if (!ssid) { toast('请输入 SSID'); return; }
+  fetch('/api/wifi/saved', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ssid, pass})
+  }).then(r => r.json()).then(j => {
+    if (j.error) { toast(j.error); return; }
+    fetch('/api/wifi/mode', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({sta:1, ssid, pass})
+    }).then(r => r.text()).then(t => { toast(t); fetchWifiStatus(); loadSavedNetworks(); }).catch(() => toast('错误'));
+  }).catch(() => toast('错误'));
+}
+
+function switchToAp() {
   fetch('/api/wifi/mode', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body)
+    body: JSON.stringify({ap:1,sta:0,ssid:'',pass:''})
   }).then(r => r.text()).then(t => { toast(t); fetchWifiStatus(); }).catch(() => toast('错误'));
+}
+
+function loadSavedNetworks() {
+  fetch('/api/wifi/saved').then(r => r.json()).then(d => {
+    const el = document.getElementById('savedNetworks');
+    const list = d.saved || [];
+    if (list.length === 0) {
+      el.innerHTML = '<span style="color:#999">未保存任何网络</span>';
+      return;
+    }
+    let html = '<div style="font-weight:bold;margin-bottom:4px">已保存网络:</div>';
+    for (const net of list) {
+      const escSsid = net.ssid.replace(/"/g, '&quot;').replace(/</g, '&lt;');
+      html += '<div style="display:flex;align-items:center;gap:6px;padding:2px 0">';
+      html += '<span style="flex:1">📶 ' + escSsid + '</span>';
+      html += '<button onclick="forgetNetwork(\'' + escSsid.replace(/'/g, "\\'") + '\')" style="height:28px;padding:0 10px;border:none;border-radius:6px;background:#e91e63;color:#fff;font-size:12px;cursor:pointer">忘记</button>';
+      html += '</div>';
+    }
+    el.innerHTML = html;
+  }).catch(() => {});
+}
+
+function scanWifi() {
+  const btn = document.getElementById('scanBtn');
+  const res = document.getElementById('scanResults');
+  btn.disabled = true;
+  btn.textContent = '扫描中...';
+  res.innerHTML = '<span style="color:#999">正在扫描...</span>';
+  fetch('/api/wifi/scan').then(r => r.json()).then(list => {
+    if (list.error) {
+      res.innerHTML = '<span style="color:#f44">' + list.error + '</span>';
+      return;
+    }
+    if (list.length === 0) {
+      res.innerHTML = '<span style="color:#999">未发现 WiFi 网络</span>';
+      return;
+    }
+    let html = '<div style="font-weight:bold;margin-bottom:4px">发现 ' + list.length + ' 个网络:</div>';
+    for (const ap of list) {
+      const bars = ap.rssi >= -50 ? '███' : ap.rssi >= -65 ? '██' : ap.rssi >= -80 ? '█' : '';
+      const authMap = {open:'开放',wep:'WEP',wpa:'WPA',wpa2:'WPA2',wpa3:'WPA3',wpa_wpa2:'WPA/WPA2',wpa2_wpa3:'WPA2/WPA3',wpa2_ent:'WPA2企业',wapi:'WAPI'};
+      const authText = authMap[ap.auth] || ap.auth;
+      const escSsid = ap.ssid.replace(/"/g, '&quot;').replace(/</g, '&lt;');
+      html += '<div style="display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer" onclick="connectToSsid(\'' + escSsid.replace(/'/g, "\\'") + '\')">';
+      html += '<span style="flex:1">' + escSsid + '</span>';
+      html += '<span style="color:#666;font-size:12px;font-family:monospace">' + bars + ' ' + ap.rssi + 'dBm</span>';
+      html += '<span style="color:#999;font-size:11px;margin-left:4px">' + authText + '</span>';
+      html += '</div>';
+    }
+    res.innerHTML = html;
+  }).catch(() => {
+    res.innerHTML = '<span style="color:#f44">扫描失败</span>';
+  }).finally(() => {
+    btn.disabled = false;
+    btn.textContent = '扫描 WiFi';
+  });
+}
+
+function connectToSsid(ssid) {
+  fetch('/api/wifi/mode', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({sta:1, ssid, pass:''})
+  }).then(r => r.text()).then(t => { toast(t); fetchWifiStatus(); loadSavedNetworks(); }).catch(() => toast('错误'));
+}
+
+function forgetNetwork(ssid) {
+  fetch('/api/wifi/saved/forget', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ssid})
+  }).then(r => r.json()).then(j => {
+    if (j.error) { toast(j.error); return; }
+    toast(j.forgotten ? '已忘记 ' + ssid : '未找到 ' + ssid);
+    loadSavedNetworks();
+  }).catch(() => toast('操作失败'));
 }
 
 function fetchWifiStatus() {
@@ -263,6 +357,8 @@ function fetchWifiStatus() {
 }
 fetchWifiStatus();
 setInterval(fetchWifiStatus, 5000);
+loadSavedNetworks();
+setInterval(loadSavedNetworks, 10000);
 
 function disableAP() {
   fetch('/api/wifi/ap/off', {method:'POST'})
