@@ -215,7 +215,9 @@ pub async fn run(
         mfr_payload[0] = (cfg.mfr_cic & 0xFF) as u8;
         mfr_payload[1] = (cfg.mfr_cic >> 8) as u8;
         mfr_payload[2..5].copy_from_slice(cfg.mfr_extra);
-        mfr_payload[5..11].copy_from_slice(cfg.mac);
+        for i in 0..6 {
+            mfr_payload[5 + i] = cfg.mac[5 - i];
+        }
 
         let mut adv_data = esp32_nimble::BLEAdvertisementData::new();
         adv_data.manufacturer_data(&mfr_payload);
