@@ -25,6 +25,7 @@ Gen2 (GANi3SB), Gen3 (GAN12UI), Gen4 (GAN15UI), Gan251, MoYu32 (WCU), QiYi (Smar
 - HTTP API tests: `scripts/test_api.py` (configure target IP as first arg)
 - Cube command line: `scripts/cube_cmd.py` (send face moves via HTTP)
 - CFOP/OLL solver tests: many `scripts/test_*.py` files
+- Protocol regression over USB: `python scripts/proto_test.py` — builds, flashes via espflash, parses device IP from boot logs, runs per-protocol HTTP matrix (switch/reset/moves/scramble/invalid) and fails on panic/reboot markers in the serial log. Options: `--port COMx`, `--ip`, `--protocols gen2,moyu32`, `--quick`, `--skip-devices`. Expected values come from `scripts/cube_sim.py` (mirror of `protocol.rs` cube math — keep in sync).
 
 ## Simulation & Debug
 

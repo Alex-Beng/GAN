@@ -10,4 +10,6 @@ __pycache__
 /share
 *.log
 /scripts/*
+!scripts/proto_test.py
+!scripts/cube_sim.py
 .opencode
