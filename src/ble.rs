@@ -15,6 +15,7 @@ fn ble_encrypt(proto: Protocol, data: &mut Vec<u8>, key: &[u8; 16], iv: &[u8; 16
     match proto {
         Protocol::MoYu32 => crate::crypto::moyu32_encrypt(data, key, iv),
         Protocol::QiYi => crate::crypto::aes_ecb_encrypt(data, key),
+        Protocol::Robot | Protocol::Timer => {},  // 无加密
         _ => crate::crypto::encrypt_msg(data, key, iv),
     }
 }
@@ -75,21 +76,79 @@ pub async fn run(
         );
         ota_version_char.lock().set_value(cfg.ota_version);
 
-        let ota_write_char = ota_service.lock().create_characteristic(
-            BleUuid::from_uuid128_string(cfg.ota_write_uuid).unwrap(),
-            NimbleProperties::WRITE | NimbleProperties::WRITE_NO_RSP,
-        );
-        ota_write_char.lock().on_write(move |args| {
-            log::info!("OTA_WRITE raw ({} bytes): {:02X?}", args.recv_data().len(), args.recv_data());
-        });
-
+        // OTA_ERR notify characteristic (must be created before FW_INFO for closure capture)
         let ota_notify_char = ota_service.lock().create_characteristic(
             BleUuid::from_uuid128_string(cfg.ota_notify_uuid).unwrap(),
             NimbleProperties::READ | NimbleProperties::NOTIFY,
         );
+        let ota_notify_char_sub = ota_notify_char.clone();
         ota_notify_char.lock().on_subscribe(move |_char, _desc, _cur_notify| {
             log::info!("OTA_NOTIFY subscribed");
         });
+
+        // FW_DATA: receive firmware binary data
+        let ota_data_char = ota_service.lock().create_characteristic(
+            BleUuid::from_uuid128_string(cfg.ota_data_uuid).unwrap(),
+            NimbleProperties::WRITE | NimbleProperties::WRITE_NO_RSP,
+        );
+        let ota_fw_bytes = Arc::new(Mutex::new(Vec::new()));
+        let ota_fw_bytes_cl = ota_fw_bytes.clone();
+        ota_data_char.lock().on_write(move |args| {
+            let data = args.recv_data();
+            log::info!("OTA_DATA ({} bytes): {:02X?}", data.len(), data);
+            ota_fw_bytes_cl.lock().unwrap().extend_from_slice(data);
+        });
+
+        // FW_INFO (f95a5034-...): OTA control commands
+        let ota_write_char = ota_service.lock().create_characteristic(
+            BleUuid::from_uuid128_string(cfg.ota_write_uuid).unwrap(),
+            NimbleProperties::WRITE | NimbleProperties::WRITE_NO_RSP,
+        );
+        let ota_fw_bytes_cl2 = ota_fw_bytes.clone();
+        let ota_notify_char_cl = ota_notify_char_sub.clone();
+        ota_write_char.lock().on_write(move |args| {
+            let data = args.recv_data();
+            log::info!("OTA_CMD ({} bytes): {:02X?}", data.len(), data);
+            if data.len() >= 1 {
+                match data[0] {
+                    0x01 => {
+                        log::info!("OTA: start update");
+                        // Notify progress
+                        let resp = vec![0x01u8, 0x00]; // status=1, progress=0
+                        ota_notify_char_cl.lock().set_value(&resp).notify();
+                    }
+                    0x02 => log::info!("OTA: check version"),
+                    0x03 => {
+                        let sz = ota_fw_bytes_cl2.lock().unwrap().len();
+                        log::info!("OTA: verify firmware ({} bytes)", sz);
+                    }
+                    0x04 => {
+                        log::info!("OTA: reboot");
+                    }
+                    _ => log::info!("OTA: unknown cmd 0x{:02X}", data[0]),
+                }
+            }
+        });
+
+        // Nordic DFU Service (for Android OtaBridge compatibility)
+        let dfu_service = server.create_service(
+            BleUuid::from_uuid128_string("0000fe59-0000-1000-8000-00805f9b34fb").unwrap()
+        );
+        // Secure DFU Control Point
+        let _dfu_cp = dfu_service.lock().create_characteristic(
+            BleUuid::from_uuid128_string("8ec90001-f315-4f60-9fb8-838830daea50").unwrap(),
+            NimbleProperties::WRITE | NimbleProperties::NOTIFY,
+        );
+        // Secure DFU Packet
+        let _dfu_packet = dfu_service.lock().create_characteristic(
+            BleUuid::from_uuid128_string("8ec90002-f315-4f60-9fb8-838830daea50").unwrap(),
+            NimbleProperties::WRITE_NO_RSP,
+        );
+        // Buttonless DFU
+        let _dfu_btnless = dfu_service.lock().create_characteristic(
+            BleUuid::from_uuid128_string("8ec90003-f315-4f60-9fb8-838830daea50").unwrap(),
+            NimbleProperties::WRITE | NimbleProperties::NOTIFY,
+        );
 
         let cmd_char = service.lock().create_characteristic(
             BleUuid::from_uuid128_string(cfg.cmd_uuid).unwrap(),
@@ -111,13 +170,26 @@ pub async fn run(
         let proto_sub = proto;
         state_char.lock().on_subscribe(move |_char, _desc, cur_notify| {
             log::info!("Client subscribed, cur_notify={:?}", cur_notify);
-            let serial = *shared_serial_sub.lock().unwrap();
-            let cs = cube_state_sub.lock().unwrap();
-            let mut msg = protocol::build_facelets(proto_sub, serial, &cs);
-            drop(cs);
-            ble_encrypt(proto_sub, &mut msg, &key_sub, &iv_sub);
-            log::info!("Sending initial FACELETS: {:02X?}", &msg);
-            state_char_sub.lock().set_value(&msg).notify();
+            if proto_sub == Protocol::Robot {
+                let msg = protocol::build_robot_info(protocol::RobotInfoType::Model);
+                log::info!("Sending initial ROBOT MODEL: {:02X?}", &msg);
+                state_char_sub.lock().set_value(&msg).notify();
+                let msg2 = protocol::build_robot_info(protocol::RobotInfoType::Version);
+                log::info!("Sending initial ROBOT VERSION: {:02X?}", &msg2);
+                state_char_sub.lock().set_value(&msg2).notify();
+            } else if proto_sub == Protocol::Timer {
+                let msg = protocol::build_timer_status(protocol::TimerStatus::Idle);
+                log::info!("Sending initial TIMER STATUS: {:02X?}", &msg);
+                state_char_sub.lock().set_value(&msg).notify();
+            } else {
+                let serial = *shared_serial_sub.lock().unwrap();
+                let cs = cube_state_sub.lock().unwrap();
+                let mut msg = protocol::build_facelets(proto_sub, serial, &cs);
+                drop(cs);
+                ble_encrypt(proto_sub, &mut msg, &key_sub, &iv_sub);
+                log::info!("Sending initial FACELETS: {:02X?}", &msg);
+                state_char_sub.lock().set_value(&msg).notify();
+            }
         });
 
         let state_char_cmd = state_char.clone();
@@ -132,6 +204,115 @@ pub async fn run(
             let data = args.recv_data();
             log::info!("CMD raw ({} bytes): {:02X?}", data.len(), data);
 
+            // Timer 协议: 无加密, CRC16, 命令/响应
+            if proto_cl == Protocol::Timer {
+                let cmd = protocol::parse_timer_command(data);
+                log::info!("TIMER CMD: {:?}", cmd);
+                let mut state_char = state_char_cmd.lock();
+                match cmd {
+                    protocol::TimerCommand::GetStatus => {
+                        let msg = protocol::build_timer_status(protocol::TimerStatus::Idle);
+                        state_char.set_value(&msg).notify();
+                    }
+                    protocol::TimerCommand::GetTimerData => {
+                        let msg = protocol::build_timer_data(protocol::TimerStatus::Idle, 0, 0, 0);
+                        state_char.set_value(&msg).notify();
+                    }
+                    protocol::TimerCommand::BindAccount(account) => {
+                        log::info!("Timer bind account: {}", account);
+                        let msg = protocol::build_timer_status(protocol::TimerStatus::Idle);
+                        state_char.set_value(&msg).notify();
+                    }
+                    protocol::TimerCommand::SetTime(y, mo, d, h, mi, s) => {
+                        log::info!("Timer set time: {}-{:02}-{:02} {:02}:{:02}:{:02}", y, mo, d, h, mi, s);
+                    }
+                    protocol::TimerCommand::SetLed(ct, r1, g1, b1, r2, g2) => {
+                        log::info!("Timer LED: ct={}, RGB1=({},{},{}), RGB2=({},{})", ct, r1, g1, b1, r2, g2);
+                    }
+                    protocol::TimerCommand::SetColorType(ct) => {
+                        log::info!("Timer set color type: {}", ct);
+                    }
+                    protocol::TimerCommand::QueryBattery => {
+                        let mut buf = vec![0x07u8, 64, 1, 80];
+                        let crc = crate::crypto::crc16_ccitt_false(&buf);
+                        buf.push((crc & 0xFF) as u8);
+                        buf.push((crc >> 8) as u8);
+                        state_char.set_value(&buf).notify();
+                    }
+                    protocol::TimerCommand::Reset(typ) => {
+                        log::info!("Timer reset type: {}", typ);
+                    }
+                    protocol::TimerCommand::Calibrate(cmd) => {
+                        log::info!("Timer calibrate: {}", cmd);
+                    }
+                    protocol::TimerCommand::QueryInfo(info_type) => {
+                        let msg = protocol::build_timer_info(info_type);
+                        state_char.set_value(&msg).notify();
+                    }
+                }
+                return;
+            }
+
+            // Robot 协议: 无加密, 直接命令/响应
+            if proto_cl == Protocol::Robot {
+                let cmd = protocol::parse_robot_command(data);
+                log::info!("ROBOT CMD: {:?}", cmd);
+                let mut state_char = state_char_cmd.lock();
+                match cmd {
+                    protocol::RobotCommand::Order(v) => {
+                        log::info!("Robot order: {}", v);
+                    }
+                    protocol::RobotCommand::QueryRemainFormulas => {
+                        let msg = protocol::build_robot_info(protocol::RobotInfoType::RemainFormulas);
+                        state_char.set_value(&msg).notify();
+                    }
+                    protocol::RobotCommand::SetFormulaList => {
+                        log::info!("Robot received formula list ({} bytes)", data.len());
+                        // 模拟执行: 转动魔方 + 发送状态
+                        let mut cs = cube_state_cl.lock().unwrap();
+                        // 简单模拟: 打乱魔方表示正在执行
+                        *cs = protocol::CubeState::solved();
+                        *cs = protocol::CubeState {
+                            cp: [3, 0, 1, 2, 4, 5, 6, 7],
+                            co: [0, 0, 0, 0, 0, 0, 0, 0],
+                            ep: [3, 0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11],
+                            eo: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                        };
+                        drop(cs);
+                        // 发送执行中状态
+                        let status = protocol::build_robot_status(1, 50);
+                        state_char.set_value(&status).notify();
+                        // 稍后发送完成状态
+                        let done = protocol::build_robot_status(2, 100);
+                        state_char.set_value(&done).notify();
+                        // 发送剩余公式数
+                        let remain = protocol::build_robot_info(protocol::RobotInfoType::RemainFormulas);
+                        state_char.set_value(&remain).notify();
+                    }
+                    protocol::RobotCommand::SingleMove(dir, surface, turns) => {
+                        log::info!("Robot single move: dir={}, surface={}, turns={}", dir, surface, turns);
+                        // 应用移动到魔方状态
+                        if surface < 6 {
+                            let mut cs = cube_state_cl.lock().unwrap();
+                            protocol::apply_move(&mut cs, surface, if dir == 0 { 0 } else { 1 });
+                            drop(cs);
+                        }
+                        // 发送完成状态
+                        let done = protocol::build_robot_status(2, 100);
+                        state_char.set_value(&done).notify();
+                    }
+                    protocol::RobotCommand::QueryInfo(info_type) => {
+                        let msg = protocol::build_robot_info(info_type);
+                        state_char.set_value(&msg).notify();
+                    }
+                    protocol::RobotCommand::SetLed(op, r, g, b) => {
+                        log::info!("Robot LED: op={}, R={}, G={}, B={}", op, r, g, b);
+                    }
+                }
+                return;
+            }
+
+            // 以下为魔方协议处理
             let min_len = if proto_cl == Protocol::Gen3 { 16 } else { 20 };
             if data.len() < min_len {
                 log::warn!("CMD too short, ignoring");
@@ -248,6 +429,17 @@ pub async fn run(
         let cube_start = embassy_time::Instant::now();
 
         loop {
+            // Robot/Timer 协议: 不发送转动通知, 仅命令/响应
+            if proto == Protocol::Robot || proto == Protocol::Timer {
+                Timer::after(Duration::from_millis(500)).await;
+                let p = *active_proto.lock().unwrap();
+                if p != proto {
+                    log::info!("Protocol changed {:?} -> {:?}, restarting BLE", proto, p);
+                    break;
+                }
+                continue;
+            }
+
             let cmd = queue.lock().unwrap().pop_front();
             let Some((face, dir)) = cmd else {
                 Timer::after(Duration::from_millis(100)).await;

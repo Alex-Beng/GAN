@@ -626,6 +626,25 @@ pub fn start_http_server(
         Ok::<(), anyhow::Error>(())
     })?;
 
+    // GATT Server verification endpoint
+    let proto_gatt = protocol.clone();
+    server.fn_handler("/api/gatt", Method::Get, move |req| {
+        let p = *proto_gatt.lock().unwrap();
+        let cfg = crate::device_config::get_config(p);
+        let json = std::format!(
+            r#"{{"protocol":"{:?}","device":"{}","mac":"{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}","services":["{}","{}"],"version":"{}"}}"#,
+            p,
+            cfg.device_name,
+            cfg.mac[0], cfg.mac[1], cfg.mac[2], cfg.mac[3], cfg.mac[4], cfg.mac[5],
+            cfg.service_uuid,
+            cfg.ota_service_uuid,
+            core::str::from_utf8(cfg.ota_version).unwrap_or("?.?.?"),
+        );
+        req.into_response(200, Some("OK"), &[("Access-Control-Allow-Origin", "*")])?
+            .write_all(json.as_bytes())?;
+        Ok::<(), anyhow::Error>(())
+    })?;
+
     Ok(server)
 }
 

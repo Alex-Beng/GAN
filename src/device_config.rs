@@ -7,6 +7,8 @@ pub enum Protocol {
     Gan251 = 3,
     MoYu32 = 4,
     QiYi = 5,
+    Robot = 6,
+    Timer = 7,
 }
 
 impl Protocol {
@@ -17,6 +19,8 @@ impl Protocol {
         Protocol::Gan251,
         Protocol::MoYu32,
         Protocol::QiYi,
+        Protocol::Robot,
+        Protocol::Timer,
     ];
 
     pub fn label(&self) -> &'static str {
@@ -27,6 +31,8 @@ impl Protocol {
             Protocol::Gan251 => "Gan251 (GAN251UI)",
             Protocol::MoYu32 => "MoYu (WCU)",
             Protocol::QiYi => "QiYi (Smart)",
+            Protocol::Robot => "Robot (GAN Robot)",
+            Protocol::Timer => "Timer (GAN Timer)",
         }
     }
 
@@ -38,6 +44,8 @@ impl Protocol {
             3 => Some(Protocol::Gan251),
             4 => Some(Protocol::MoYu32),
             5 => Some(Protocol::QiYi),
+            6 => Some(Protocol::Robot),
+            7 => Some(Protocol::Timer),
             _ => None,
         }
     }
@@ -54,6 +62,7 @@ pub struct ProtoCfg {
     pub ota_service_uuid: &'static str,
     pub ota_version_uuid: &'static str,
     pub ota_write_uuid: &'static str,
+    pub ota_data_uuid: &'static str,
     pub ota_notify_uuid: &'static str,
     pub ota_version: &'static [u8; 16],
     pub base_key: &'static [u8; 16],
@@ -71,6 +80,8 @@ const MAC_GEN4: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xCC];
 const MAC_GAN251: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xCD];
 const MAC_MOYU32: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xCE];
 const MAC_QIYI: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xCF];
+const MAC_ROBOT: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xD0];
+const MAC_TIMER: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xD1];
 
 const C_OTA_VERSION: &[u8; 16] = b"1.0.0\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
 const C_MFR_EXTRA: &[u8; 3] = &[0x00, 0x00, 0x00];
@@ -117,6 +128,7 @@ const CFG_GEN2: ProtoCfg = ProtoCfg {
     ota_version_uuid: "f95a4b66-a721-11e9-a2a3-022ae2dbcce4",
     ota_write_uuid: "f95a5034-a721-11e9-a2a3-022ae2dbcce4",
     ota_notify_uuid: "ec4cff6d-81fc-4e5b-91e0-8103885c9ae3",
+    ota_data_uuid: "f95a4cce-a721-11e9-a2a3-022ae2dbcce4",
     ota_version: C_OTA_VERSION,
     base_key: &C_KEY_GEN2,
     base_iv: &C_IV_GEN2,
@@ -135,6 +147,7 @@ const CFG_GEN3: ProtoCfg = ProtoCfg {
     ota_version_uuid: "f95a4b66-a721-11e9-a2a3-022ae2dbcce4",
     ota_write_uuid: "f95a5034-a721-11e9-a2a3-022ae2dbcce4",
     ota_notify_uuid: "ec4cff6d-81fc-4e5b-91e0-8103885c9ae3",
+    ota_data_uuid: "f95a4cce-a721-11e9-a2a3-022ae2dbcce4",
     ota_version: C_OTA_VERSION,
     base_key: &C_KEY_GEN2,
     base_iv: &C_IV_GEN2,
@@ -153,6 +166,7 @@ const CFG_GEN4: ProtoCfg = ProtoCfg {
     ota_version_uuid: "f95a4b66-a721-11e9-a2a3-022ae2dbcce4",
     ota_write_uuid: "f95a5034-a721-11e9-a2a3-022ae2dbcce4",
     ota_notify_uuid: "ec4cff6d-81fc-4e5b-91e0-8103885c9ae3",
+    ota_data_uuid: "f95a4cce-a721-11e9-a2a3-022ae2dbcce4",
     ota_version: C_OTA_VERSION,
     base_key: &C_KEY_GEN2,
     base_iv: &C_IV_GEN2,
@@ -171,6 +185,7 @@ const CFG_GAN251: ProtoCfg = ProtoCfg {
     ota_version_uuid: "f95a4b66-a721-11e9-a2a3-022ae2dbcce4",
     ota_write_uuid: "f95a5034-a721-11e9-a2a3-022ae2dbcce4",
     ota_notify_uuid: "ec4cff6d-81fc-4e5b-91e0-8103885c9ae3",
+    ota_data_uuid: "f95a4cce-a721-11e9-a2a3-022ae2dbcce4",
     ota_version: C_OTA_VERSION,
     base_key: &C_KEY_GAN251,
     base_iv: &C_IV_GAN251,
@@ -189,6 +204,7 @@ const CFG_MOYU32: ProtoCfg = ProtoCfg {
     ota_version_uuid: "00000000-0000-0000-0000-000000000000",
     ota_write_uuid: "00000000-0000-0000-0000-000000000000",
     ota_notify_uuid: "00000000-0000-0000-0000-000000000000",
+    ota_data_uuid: "00000000-0000-0000-0000-000000000000",
     ota_version: C_OTA_VERSION,
     base_key: &C_KEY_MOYU32,
     base_iv: &C_IV_MOYU32,
@@ -207,6 +223,7 @@ const CFG_QIYI: ProtoCfg = ProtoCfg {
     ota_version_uuid: "00000000-0000-0000-0000-000000000000",
     ota_write_uuid: "00000000-0000-0000-0000-000000000000",
     ota_notify_uuid: "00000000-0000-0000-0000-000000000000",
+    ota_data_uuid: "00000000-0000-0000-0000-000000000000",
     ota_version: C_OTA_VERSION,
     base_key: &C_KEY_QIYI,
     base_iv: &[0u8; 16],
@@ -214,7 +231,47 @@ const CFG_QIYI: ProtoCfg = ProtoCfg {
     mfr_extra: C_MFR_EXTRA,
 };
 
-pub const PROTOCOLS: &[ProtoCfg] = &[CFG_GEN2, CFG_GEN3, CFG_GEN4, CFG_GAN251, CFG_MOYU32, CFG_QIYI];
+const CFG_ROBOT: ProtoCfg = ProtoCfg {
+    proto: Protocol::Robot,
+    device_name: "GAN-ROBOT",
+    mac: &MAC_ROBOT,
+    // RobotV1 uses same service UUID as Gen3, but no encryption
+    service_uuid: "8653000a-43e6-47b7-9cb0-5fc21d4ae340",
+    cmd_uuid: "8653000c-43e6-47b7-9cb0-5fc21d4ae340",
+    state_uuid: "8653000b-43e6-47b7-9cb0-5fc21d4ae340",
+    ota_service_uuid: "f95a48e6-a721-11e9-a2a3-022ae2dbcce4",
+    ota_version_uuid: "f95a4b66-a721-11e9-a2a3-022ae2dbcce4",
+    ota_write_uuid: "f95a5034-a721-11e9-a2a3-022ae2dbcce4",
+    ota_notify_uuid: "ec4cff6d-81fc-4e5b-91e0-8103885c9ae3",
+    ota_data_uuid: "f95a4cce-a721-11e9-a2a3-022ae2dbcce4",
+    ota_version: C_OTA_VERSION,
+    base_key: &C_KEY_GEN2,
+    base_iv: &C_IV_GEN2,
+    mfr_cic: 0x0001,
+    mfr_extra: C_MFR_EXTRA,
+};
+
+const CFG_TIMER: ProtoCfg = ProtoCfg {
+    proto: Protocol::Timer,
+    device_name: "GAN-TIMER",
+    mac: &MAC_TIMER,
+    // TimerV1: service FFF0, char FFF5, no encryption, CRC16
+    service_uuid: "0000fff0-0000-1000-8000-00805f9b34fb",
+    cmd_uuid: "0000fff5-0000-1000-8000-00805f9b34fb",
+    state_uuid: "0000fff5-0000-1000-8000-00805f9b34fb",
+    ota_service_uuid: "f95a48e6-a721-11e9-a2a3-022ae2dbcce4",
+    ota_version_uuid: "f95a4b66-a721-11e9-a2a3-022ae2dbcce4",
+    ota_write_uuid: "f95a5034-a721-11e9-a2a3-022ae2dbcce4",
+    ota_data_uuid: "f95a4cce-a721-11e9-a2a3-022ae2dbcce4",
+    ota_notify_uuid: "ec4cff6d-81fc-4e5b-91e0-8103885c9ae3",
+    ota_version: C_OTA_VERSION,
+    base_key: &C_KEY_GEN2,
+    base_iv: &C_IV_GEN2,
+    mfr_cic: 0x0001,
+    mfr_extra: C_MFR_EXTRA,
+};
+
+pub const PROTOCOLS: &[ProtoCfg] = &[CFG_GEN2, CFG_GEN3, CFG_GEN4, CFG_GAN251, CFG_MOYU32, CFG_QIYI, CFG_ROBOT, CFG_TIMER];
 
 pub fn get_config(proto: Protocol) -> &'static ProtoCfg {
     &PROTOCOLS[proto as usize]

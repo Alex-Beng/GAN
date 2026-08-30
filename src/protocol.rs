@@ -175,6 +175,8 @@ pub fn build_facelets(proto: Protocol, serial: u16, state: &CubeState) -> Vec<u8
             let payload = build_full_qiyi(fb_packed, serial, 80, mac);
             qiyi_frame(&payload)
         }
+        Protocol::Timer => Vec::new(),
+        Protocol::Robot => Vec::new(),  // Robot 不使用 facelets
     }
 }
 
@@ -221,6 +223,8 @@ pub fn build_hardware_single(proto: Protocol) -> Vec<u8> {
             let payload = build_full_qiyi(&dummy_fb, 0, 80, mac);
             qiyi_frame(&payload)
         }
+        Protocol::Timer => Vec::new(),
+        Protocol::Robot => Vec::new(),
     }
 }
 
@@ -303,6 +307,8 @@ pub fn build_battery(proto: Protocol, level: u8) -> Vec<u8> {
             let payload = build_full_qiyi(&dummy_fb, 0, level, mac);
             qiyi_frame(&payload)
         }
+        Protocol::Timer => Vec::new(),
+        Protocol::Robot => Vec::new(),
     }
 }
 
@@ -378,6 +384,8 @@ pub fn build_move(proto: Protocol, serial: u16, history: &[(u8, u8, u16)], cube_
             let payload = build_move_qiyi(serial, history);
             qiyi_frame(&payload)
         }
+        Protocol::Timer => Vec::new(),
+        Protocol::Robot => Vec::new(),
     }
 }
 
@@ -423,6 +431,8 @@ pub fn build_move_history(proto: Protocol, start_serial: u8, moves: &[(u8, u8)])
         }
         Protocol::Gen2 => Vec::new(),
         Protocol::MoYu32 | Protocol::QiYi => Vec::new(),
+        Protocol::Timer => Vec::new(),
+        Protocol::Robot => Vec::new(),
     }
 }
 
@@ -472,6 +482,8 @@ pub fn build_gyro(proto: Protocol, qw: i16, qx: i16, qy: i16, qz: i16, vx: i8, v
             let qzf = qz as f32 / 32767.0;
             Some(qiyi_frame(&build_gyro_qiyi(qwf, qxf, qyf, qzf)))
         }
+        Protocol::Timer => None,
+        Protocol::Robot => None,
     }
 }
 
@@ -520,6 +532,8 @@ pub fn parse_command_type(proto: Protocol, data: &[u8]) -> IncomingCommand {
         }
         Protocol::MoYu32 => parse_command_moyu32(data),
         Protocol::QiYi => parse_command_qiyi(data),
+        Protocol::Timer => IncomingCommand::Unknown,
+        Protocol::Robot => IncomingCommand::Unknown,  // 使用 parse_robot_command
     }
 }
 
@@ -791,4 +805,230 @@ pub fn parse_command_qiyi(data: &[u8]) -> IncomingCommand {
         0x02 => IncomingCommand::Facelets,
         _ => IncomingCommand::Unknown,
     }
+}
+
+// ==================== Robot ====================
+
+/// Robot 信息类型
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RobotInfoType {
+    RemainFormulas,   // appProtoId=2
+    MacAddress,       // appProtoId=5
+    Model,            // appProtoId=6
+    SerialNumber,     // appProtoId=7
+    Version,          // appProtoId=8
+    DeviceVersion,    // appProtoId=9
+    VersionDate,      // appProtoId=10
+    Manufacturer,     // appProtoId=11
+}
+
+/// Robot 指令
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RobotCommand {
+    Order(u8),                    // appProtoId=1
+    QueryRemainFormulas,          // appProtoId=2
+    SetFormulaList,               // appProtoId=3
+    SingleMove(u8, u8, u16),      // appProtoId=4: direction, surface, turns
+    QueryInfo(RobotInfoType),     // appProtoId=5..11
+    SetLed(u8, u8, u8, u8),       // appProtoId=12: op, r, g, b
+}
+
+/// 解析 Robot 写入指令
+pub fn parse_robot_command(data: &[u8]) -> RobotCommand {
+    if data.is_empty() {
+        return RobotCommand::QueryInfo(RobotInfoType::RemainFormulas);
+    }
+    let cmd = data[0];
+    match cmd {
+        1 => RobotCommand::Order(data.get(1).copied().unwrap_or(0)),
+        2 => RobotCommand::QueryRemainFormulas,
+        3 => RobotCommand::SetFormulaList,
+        4 => {
+            let dir = data.get(1).copied().unwrap_or(0);
+            let surface = data.get(2).copied().unwrap_or(0);
+            let turns = u16::from_le_bytes([data.get(3).copied().unwrap_or(0), data.get(4).copied().unwrap_or(0)]);
+            RobotCommand::SingleMove(dir, surface, turns)
+        }
+        5 => RobotCommand::QueryInfo(RobotInfoType::MacAddress),
+        6 => RobotCommand::QueryInfo(RobotInfoType::Model),
+        7 => RobotCommand::QueryInfo(RobotInfoType::SerialNumber),
+        8 => RobotCommand::QueryInfo(RobotInfoType::Version),
+        9 => RobotCommand::QueryInfo(RobotInfoType::DeviceVersion),
+        10 => RobotCommand::QueryInfo(RobotInfoType::VersionDate),
+        11 => RobotCommand::QueryInfo(RobotInfoType::Manufacturer),
+        12 => {
+            let op = data.get(1).copied().unwrap_or(0);
+            let r = data.get(2).copied().unwrap_or(0);
+            let g = data.get(3).copied().unwrap_or(0);
+            let b = data.get(4).copied().unwrap_or(0);
+            RobotCommand::SetLed(op, r, g, b)
+        }
+        _ => RobotCommand::Order(cmd),
+    }
+}
+
+/// 构建 Robot 信息响应包
+/// 格式: [appProtoId, data...]
+pub fn build_robot_info(info_type: RobotInfoType) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(20);
+    match info_type {
+        RobotInfoType::RemainFormulas => {
+            buf.push(2);  // appProtoId=2
+            buf.push(0);  // 0 formulas remaining
+        }
+        RobotInfoType::MacAddress => {
+            buf.push(5);  // appProtoId=5
+            buf.extend_from_slice(&[0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xD0]);
+        }
+        RobotInfoType::Model => {
+            buf.push(6);  // appProtoId=6
+            let model = b"GAN Robot Emu  \x00";  // 16 bytes
+            buf.extend_from_slice(&model[..16]);
+        }
+        RobotInfoType::SerialNumber => {
+            buf.push(7);  // appProtoId=7
+            buf.extend_from_slice(b"EMU0001");  // 7 bytes
+        }
+        RobotInfoType::Version => {
+            buf.push(8);  // appProtoId=8
+            buf.extend_from_slice(b"1.0.0\x00\x00\x00");  // 7 bytes
+        }
+        RobotInfoType::DeviceVersion => {
+            buf.push(9);  // appProtoId=9
+            buf.extend_from_slice(&[1, 0, 0]);  // 3 bytes
+        }
+        RobotInfoType::VersionDate => {
+            buf.push(10);  // appProtoId=10
+            buf.extend_from_slice(&[1, 0, 0]);  // version: 3 bytes
+            buf.extend_from_slice(&[0xE8, 0x07, 0x01]);  // date: 2024-07-01
+        }
+        RobotInfoType::Manufacturer => {
+            buf.push(11);  // appProtoId=11
+            let mfr = b"GAN ROBOT       ";  // 16 bytes
+            buf.extend_from_slice(&mfr[..16]);
+        }
+    }
+    buf
+}
+
+/// 构建 Robot 状态响应 (appProtoId=13/14)
+/// status: 0=idle, 1=solving, 2=done
+pub fn build_robot_status(status: u8, progress: u8) -> Vec<u8> {
+    // appProtoId=14: [len, robotStatus, robotTime(16bit)]
+    let buf = vec![14u8, 3, status, progress, 0, 0];
+    buf
+}
+
+// ==================== Timer ====================
+
+/// Timer 命令类型
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimerCommand {
+    GetStatus,
+    GetTimerData,
+    BindAccount(u32),
+    SetTime(u8,u8,u8,u8,u8,u8),
+    SetLed(u8,u8,u8,u8,u8,u8),
+    SetColorType(u8),
+    QueryBattery,
+    Reset(u8),
+    Calibrate(u8),
+    QueryInfo(u8),
+}
+
+/// Timer 状态
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimerStatus {
+    Idle = 0,
+    Timing = 1,
+    Stopped = 2,
+}
+
+/// 解析 Timer 写入指令
+pub fn parse_timer_command(data: &[u8]) -> TimerCommand {
+    if data.len() < 3 {
+        return TimerCommand::GetStatus;
+    }
+    let proto_id = (data[0] as u32) << 16 | (data[1] as u32) << 8 | data[2] as u32;
+    // 24-bit protoId
+    if proto_id >= 0x010000 && proto_id < 0x020000 {
+        return TimerCommand::GetStatus;
+    }
+    if proto_id >= 0x020000 && proto_id < 0x030000 {
+        return TimerCommand::GetTimerData;
+    }
+    if proto_id >= 0x030000 && proto_id < 0x040000 {
+        if data.len() >= 9 {
+            let account = u32::from_le_bytes([data[3], data[4], data[5], data[6]]);
+            return TimerCommand::BindAccount(account);
+        }
+        return TimerCommand::GetStatus;
+    }
+    // 8-bit protoId
+    match data[0] {
+        4 => TimerCommand::SetTime(
+            data.get(1).copied().unwrap_or(0),
+            data.get(2).copied().unwrap_or(0),
+            data.get(3).copied().unwrap_or(0),
+            data.get(4).copied().unwrap_or(0),
+            data.get(5).copied().unwrap_or(0),
+            data.get(6).copied().unwrap_or(0),
+        ),
+        5 => TimerCommand::SetLed(
+            data.get(1).copied().unwrap_or(0),
+            data.get(2).copied().unwrap_or(0),
+            data.get(3).copied().unwrap_or(0),
+            data.get(4).copied().unwrap_or(0),
+            data.get(5).copied().unwrap_or(0),
+            data.get(6).copied().unwrap_or(0),
+        ),
+        6 => TimerCommand::SetColorType(data.get(1).copied().unwrap_or(0)),
+        7 => TimerCommand::QueryBattery,
+        8 => TimerCommand::Reset(data.get(1).copied().unwrap_or(0)),
+        9 => TimerCommand::Calibrate(data.get(1).copied().unwrap_or(0)),
+        10..=16 => TimerCommand::QueryInfo(data[0]),
+        _ => TimerCommand::GetStatus,
+    }
+}
+
+/// 构建 Timer 状态响应 [0x01, 0x04, status, crc16]
+pub fn build_timer_status(status: TimerStatus) -> Vec<u8> {
+    let mut buf = vec![0x01, 0x04, status as u8];
+    let crc = crate::crypto::crc16_ccitt_false(&buf);
+    buf.push((crc & 0xFF) as u8);
+    buf.push((crc >> 8) as u8);
+    buf
+}
+
+/// 构建 Timer 计时数据 [0x01, 0x08, status, minute, second, ms(16bit), crc16]
+pub fn build_timer_data(status: TimerStatus, minute: u8, second: u8, ms: u16) -> Vec<u8> {
+    let mut buf = vec![0x01, 0x08, status as u8, minute, second];
+    buf.push((ms & 0xFF) as u8);
+    buf.push((ms >> 8) as u8);
+    let crc = crate::crypto::crc16_ccitt_false(&buf);
+    buf.push((crc & 0xFF) as u8);
+    buf.push((crc >> 8) as u8);
+    buf
+}
+
+/// 构建 Timer 信息响应 (appProtoId=10..16)
+pub fn build_timer_info(info_type: u8) -> Vec<u8> {
+    let mut buf = vec![info_type];
+    match info_type {
+        10 => buf.extend_from_slice(&[0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xD1]),
+        11 => buf.extend_from_slice(b"GAN TIMER EMU  "),
+        12 => buf.extend_from_slice(b"TM00001"),
+        13 => buf.extend_from_slice(b"1.0.0\x00\x00\x00"),
+        14 => buf.extend_from_slice(&[1, 0, 0]),
+        15 => {
+            buf.extend_from_slice(&[1, 0, 0]);
+            buf.extend_from_slice(&[0xE8, 0x07, 0x01]);
+        }
+        16 => buf.extend_from_slice(b"GAN TIMER"),
+        _ => {}
+    }
+    let crc = crate::crypto::crc16_ccitt_false(&buf);
+    buf.push((crc & 0xFF) as u8);
+    buf.push((crc >> 8) as u8);
+    buf
 }
