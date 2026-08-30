@@ -356,9 +356,9 @@ function fetchWifiStatus() {
   });
 }
 fetchWifiStatus();
-setInterval(fetchWifiStatus, 5000);
+setInterval(() => { if (!document.hidden) fetchWifiStatus(); }, 10000);
 loadSavedNetworks();
-setInterval(loadSavedNetworks, 10000);
+setInterval(() => { if (!document.hidden) loadSavedNetworks(); }, 30000);
 
 function disableAP() {
   fetch('/api/wifi/ap/off', {method:'POST'})

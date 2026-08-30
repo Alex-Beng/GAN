@@ -151,7 +151,12 @@ pub fn start_http_server(
     move_delay_ms: Arc<Mutex<u64>>,
     protocol: Arc<Mutex<Protocol>>,
 ) -> anyhow::Result<EspHttpServer<'static>> {
-    let mut server = EspHttpServer::new(&Configuration::default())?;
+    // Browsers keep several parallel keep-alive connections (page + polls);
+    // with the default 4 sockets LRU purges connections mid-response (ECONNRESET).
+    let mut server = EspHttpServer::new(&Configuration {
+        max_open_sockets: 7,
+        ..Default::default()
+    })?;
 
     let temp_sensor = match CpuTemp::new() {
         Ok(t) => Some(Arc::new(Mutex::new(t))),
@@ -162,8 +167,8 @@ pub fn start_http_server(
     };
 
     server.fn_handler("/", Method::Get, |req| {
-        req.into_ok_response()?
-            .write_all(INDEX_HTML.as_bytes())?;
+        let _ = req.into_ok_response()?
+            .write_all(INDEX_HTML.as_bytes());
         Ok::<(), anyhow::Error>(())
     })?;
 
@@ -213,8 +218,8 @@ pub fn start_http_server(
             "bad request".to_string()
         };
 
-        req.into_ok_response()?
-            .write_all(resp_text.as_bytes())?;
+        let _ = req.into_ok_response()?
+            .write_all(resp_text.as_bytes());
         Ok::<(), anyhow::Error>(())
     })?;
 
@@ -325,8 +330,8 @@ pub fn start_http_server(
 
         log::info!("/api/moves resp: {}", resp_text);
 
-        req.into_response(200, Some("OK"), &[("Access-Control-Allow-Origin", "*")])?
-            .write_all(resp_text.as_bytes())?;
+        let _ = req.into_response(200, Some("OK"), &[("Access-Control-Allow-Origin", "*")])?
+            .write_all(resp_text.as_bytes());
         Ok::<(), anyhow::Error>(())
     })?;
 
@@ -355,8 +360,8 @@ pub fn start_http_server(
             "bad request".to_string()
         };
 
-        req.into_ok_response()?
-            .write_all(resp_text.as_bytes())?;
+        let _ = req.into_ok_response()?
+            .write_all(resp_text.as_bytes());
         Ok::<(), anyhow::Error>(())
     })?;
 
@@ -365,12 +370,12 @@ pub fn start_http_server(
     server.fn_handler("/api/wifi/ap/off", Method::Post, move |req| {
         match wifi::disable_ap(&wf_ap_off, &nvs_ap_off) {
             Ok(()) => {
-                req.into_ok_response()?
-                    .write_all(b"AP disabled")?;
+                let _ = req.into_ok_response()?
+                    .write_all(b"AP disabled");
             }
             Err(e) => {
-                req.into_response(500, Some("Error"), &[])?
-                    .write_all(format!("error:{}", e).as_bytes())?;
+                let _ = req.into_response(500, Some("Error"), &[])?
+                    .write_all(format!("error:{}", e).as_bytes());
             }
         }
         Ok::<(), anyhow::Error>(())
@@ -386,16 +391,16 @@ pub fn start_http_server(
             sta_connected,
             ip.unwrap_or_default()
         );
-        req.into_ok_response()?
-            .write_all(json.as_bytes())?;
+        let _ = req.into_ok_response()?
+            .write_all(json.as_bytes());
         Ok::<(), anyhow::Error>(())
     })?;
 
     let wf_scan = wf.clone();
     server.fn_handler("/api/wifi/scan", Method::Get, move |req| {
         let json = wifi::scan_and_format_json(&wf_scan).unwrap_or_else(|e| std::format!("{{\"error\":\"{}\"}}", e));
-        req.into_ok_response()?
-            .write_all(json.as_bytes())?;
+        let _ = req.into_ok_response()?
+            .write_all(json.as_bytes());
         Ok::<(), anyhow::Error>(())
     })?;
 
@@ -408,8 +413,8 @@ pub fn start_http_server(
             json.push_str(&std::format!("{{\"ssid\":\"{}\"}}", net.ssid));
         }
         json.push_str("]}");
-        req.into_ok_response()?
-            .write_all(json.as_bytes())?;
+        let _ = req.into_ok_response()?
+            .write_all(json.as_bytes());
         Ok::<(), anyhow::Error>(())
     })?;
 
@@ -438,8 +443,8 @@ pub fn start_http_server(
         } else {
             "{\"error\":\"bad request\"}".to_string()
         };
-        req.into_ok_response()?
-            .write_all(resp.as_bytes())?;
+        let _ = req.into_ok_response()?
+            .write_all(resp.as_bytes());
         Ok::<(), anyhow::Error>(())
     })?;
 
@@ -468,8 +473,8 @@ pub fn start_http_server(
         } else {
             "{\"error\":\"bad request\"}".to_string()
         };
-        req.into_ok_response()?
-            .write_all(resp.as_bytes())?;
+        let _ = req.into_ok_response()?
+            .write_all(resp.as_bytes());
         Ok::<(), anyhow::Error>(())
     })?;
 
@@ -484,8 +489,8 @@ pub fn start_http_server(
             cs.eo[0], cs.eo[1], cs.eo[2], cs.eo[3], cs.eo[4], cs.eo[5], cs.eo[6], cs.eo[7], cs.eo[8], cs.eo[9], cs.eo[10], cs.eo[11],
         );
         drop(cs);
-        req.into_ok_response()?
-            .write_all(json.as_bytes())?;
+        let _ = req.into_ok_response()?
+            .write_all(json.as_bytes());
         Ok::<(), anyhow::Error>(())
     })?;
 
@@ -495,8 +500,8 @@ pub fn start_http_server(
         let f = protocol::to_facelet_string(&cs);
         drop(cs);
         let s = std::str::from_utf8(&f).unwrap_or("UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB");
-        req.into_response(200, Some("OK"), &[("Access-Control-Allow-Origin", "*")])?
-            .write_all(s.as_bytes())?;
+        let _ = req.into_response(200, Some("OK"), &[("Access-Control-Allow-Origin", "*")])?
+            .write_all(s.as_bytes());
         Ok::<(), anyhow::Error>(())
     })?;
 
@@ -505,16 +510,16 @@ pub fn start_http_server(
         let mut cs = cs_ref3.lock().unwrap();
         *cs = protocol::CubeState::solved();
         drop(cs);
-        req.into_ok_response()?
-            .write_all(b"reset")?;
+        let _ = req.into_ok_response()?
+            .write_all(b"reset");
         Ok::<(), anyhow::Error>(())
     })?;
 
     server.fn_handler("/api/freq", Method::Get, move |req| {
         let mhz = unsafe { esp_idf_svc::sys::ets_get_cpu_frequency() };
         let json = std::format!("{{\"mhz\":{}}}", mhz);
-        req.into_ok_response()?
-            .write_all(json.as_bytes())?;
+        let _ = req.into_ok_response()?
+            .write_all(json.as_bytes());
         Ok::<(), anyhow::Error>(())
     })?;
 
@@ -530,16 +535,16 @@ pub fn start_http_server(
             },
             None => "{\"error\":\"sensor not available\"}".to_string(),
         };
-        req.into_ok_response()?
-            .write_all(json.as_bytes())?;
+        let _ = req.into_ok_response()?
+            .write_all(json.as_bytes());
         Ok::<(), anyhow::Error>(())
     })?;
 
     let delay_ref = move_delay_ms.clone();
     server.fn_handler("/api/delay", Method::Get, move |req| {
         let d = *delay_ref.lock().unwrap();
-        req.into_ok_response()?
-            .write_all(std::format!("{{\"delay\":{}}}", d).as_bytes())?;
+        let _ = req.into_ok_response()?
+            .write_all(std::format!("{{\"delay\":{}}}", d).as_bytes());
         Ok::<(), anyhow::Error>(())
     })?;
 
@@ -566,8 +571,8 @@ pub fn start_http_server(
         } else {
             "bad request".to_string()
         };
-        req.into_ok_response()?
-            .write_all(resp.as_bytes())?;
+        let _ = req.into_ok_response()?
+            .write_all(resp.as_bytes());
         Ok::<(), anyhow::Error>(())
     })?;
 
@@ -578,8 +583,8 @@ pub fn start_http_server(
         q.clear();
         drop(q);
         log::info!("/api/moves/clear: cleared {} moves", count);
-        req.into_ok_response()?
-            .write_all(std::format!("{{\"cleared\":{}}}", count).as_bytes())?;
+        let _ = req.into_ok_response()?
+            .write_all(std::format!("{{\"cleared\":{}}}", count).as_bytes());
         Ok::<(), anyhow::Error>(())
     })?;
 
@@ -587,8 +592,8 @@ pub fn start_http_server(
     server.fn_handler("/api/protocol", Method::Get, move |req| {
         let p = *proto_get.lock().unwrap();
         let json = std::format!("{{\"protocol\":\"{:?}\",\"index\":{}}}", p, p as u8);
-        req.into_ok_response()?
-            .write_all(json.as_bytes())?;
+        let _ = req.into_ok_response()?
+            .write_all(json.as_bytes());
         Ok::<(), anyhow::Error>(())
     })?;
 
@@ -621,8 +626,8 @@ pub fn start_http_server(
                 } else { "{\"error\":\"invalid index\"}".to_string() }
             } else { "{\"error\":\"bad request\"}".to_string() }
         } else { "{\"error\":\"bad request\"}".to_string() };
-        req.into_ok_response()?
-            .write_all(resp.as_bytes())?;
+        let _ = req.into_ok_response()?
+            .write_all(resp.as_bytes());
         Ok::<(), anyhow::Error>(())
     })?;
 
@@ -640,8 +645,8 @@ pub fn start_http_server(
             cfg.ota_service_uuid,
             core::str::from_utf8(cfg.ota_version).unwrap_or("?.?.?"),
         );
-        req.into_response(200, Some("OK"), &[("Access-Control-Allow-Origin", "*")])?
-            .write_all(json.as_bytes())?;
+        let _ = req.into_response(200, Some("OK"), &[("Access-Control-Allow-Origin", "*")])?
+            .write_all(json.as_bytes());
         Ok::<(), anyhow::Error>(())
     })?;
 
