@@ -1,0 +1,343 @@
+#!/usr/bin/env python3
+"""BLE conformance check for the MoYu32 (WCU) emulator, using bleak.
+
+Validates the emulator against the public WCU reference implementation
+(csTimer src/js/hardware/moyu32cube.js):
+
+  1. Advertising: name pattern, advertised service UUID, manufacturer data
+     (CIC 0x0000 + reversed MAC in the last 6 bytes)
+  2. GATT: connect, derive keys from the advertised MAC, send encrypted
+     requests 161 (info) / 163 (state) / 164 (battery)
+  3. Decode 163 facelets and 165 move notifications per the WCU bit layout
+     and compare against the offline cube_sim mirror (moves injected via HTTP)
+
+Usage:
+  python scripts/ble_check.py [--ip 192.168.50.246] [--no-switch]
+
+Requires: pip install bleak pycryptodome requests
+"""
+import argparse
+import asyncio
+import sys
+import time
+from pathlib import Path
+
+import requests
+from bleak import BleakScanner, BleakClient
+from Crypto.Cipher import AES
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cube_sim
+
+SERVICE_UUID = "0783b03e-7735-b5a0-1760-a305d2795cb0"
+CHR_READ_UUID = "0783b03e-7735-b5a0-1760-a305d2795cb1"   # notify
+CHR_WRITE_UUID = "0783b03e-7735-b5a0-1760-a305d2795cb2"  # write
+
+EXPECT_NAME = "WCU_MY32_A4CE"
+EXPECT_MAC = [0xCF, 0x30, 0x16, 0x00, 0xA4, 0xCE]
+
+# Base key/IV (verified identical to csTimer moyu32cube.js KEYS)
+BASE_KEY = [21, 119, 58, 92, 103, 14, 45, 31, 23, 103, 42, 19, 155, 103, 82, 87]
+BASE_IV = [17, 35, 38, 37, 134, 42, 44, 59, 85, 6, 127, 49, 126, 103, 33, 87]
+
+URFDLB_TO_FBUDLR = [2, 5, 0, 3, 4, 1]  # U R F D L B -> F B U D L R
+FBUDLR = "FBUDLR"
+
+
+class Check:
+    def __init__(self):
+        self.failures = []
+        self.count = 0
+
+    def check(self, ok, label, detail=""):
+        self.count += 1
+        status = "PASS" if ok else "FAIL"
+        print("  [%s] %s%s" % (status, label, (" | " + str(detail)) if detail and not ok else ""))
+        if not ok:
+            self.failures.append((label, str(detail)[:300]))
+        return ok
+
+
+# ---------------------------------------------------------------- WCU crypto
+
+def derive_key_iv(mac_bytes):
+    salt = list(reversed(mac_bytes))
+    key, iv = list(BASE_KEY), list(BASE_IV)
+    for i in range(6):
+        key[i] = (key[i] + salt[i]) % 255
+        iv[i] = (iv[i] + salt[i]) % 255
+    return key, iv
+
+
+def ecb(data, key, encrypt):
+    aes = AES.new(bytes(key), AES.MODE_ECB)
+    return aes.encrypt(bytes(data)) if encrypt else aes.decrypt(bytes(data))
+
+
+def wcu_encrypt(data, key, iv):
+    buf = bytearray(data)
+    for i in range(16):
+        buf[i] ^= iv[i]
+    buf[0:16] = ecb(buf[0:16], key, True)
+    if len(buf) > 16:
+        off = len(buf) - 16
+        for i in range(16):
+            buf[off + i] ^= iv[i]
+        buf[off:off + 16] = ecb(buf[off:off + 16], key, True)
+    return buf
+
+
+def wcu_decrypt(data, key, iv):
+    buf = bytearray(data)
+    if len(buf) > 16:
+        off = len(buf) - 16
+        buf[off:off + 16] = ecb(buf[off:off + 16], key, False)
+        for i in range(16):
+            buf[off + i] ^= iv[i]
+    buf[0:16] = ecb(buf[0:16], key, False)
+    for i in range(16):
+        buf[i] ^= iv[i]
+    return buf
+
+
+# ---------------------------------------------------------------- decoders
+
+def bits_of(data):
+    return "".join("{:08b}".format(b) for b in data)
+
+
+def parse_type(plain):
+    return int(bits_of(plain)[0:8], 2)
+
+
+def parse_facelet_msg(plain):
+    """Returns (moveCnt, facelet_string in URFDLB letters)."""
+    bits = bits_of(plain)
+    move_cnt = int(bits[152:160], 2)
+    fb = bits[8:152]
+    out = []
+    for i in range(6):  # output faces in URFDLB order
+        face = fb[URFDLB_TO_FBUDLR[i] * 24: URFDLB_TO_FBUDLR[i] * 24 + 24]
+        for j in range(8):
+            out.append(FBUDLR[int(face[j * 3:j * 3 + 3], 2)])
+            if j == 3:  # center is implied by the storage face
+                out.append(FBUDLR[URFDLB_TO_FBUDLR[i]])
+    return move_cnt, "".join(out)
+
+
+def parse_move_msg(plain):
+    """Returns (moveCnt, moves[5], times[5]); None marks an empty slot."""
+    bits = bits_of(plain)
+    times = [int(bits[8 + i * 16:24 + i * 16], 2) for i in range(5)]
+    move_cnt = int(bits[88:96], 2)
+    moves = []
+    for i in range(5):
+        m = int(bits[96 + i * 5:101 + i * 5], 2)
+        moves.append(None if m >= 12 else FBUDLR[m >> 1] + ("'" if m & 1 else ""))
+    return move_cnt, moves, times
+
+
+def parse_hardware_msg(plain):
+    bits = bits_of(plain)
+    name = "".join(chr(int(bits[8 + i * 8:16 + i * 8], 2)) for i in range(8))
+    hw = "%d.%d" % (int(bits[72:80], 2), int(bits[80:88], 2))
+    sw = "%d.%d" % (int(bits[88:96], 2), int(bits[96:104], 2))
+    return name, hw, sw
+
+
+# ---------------------------------------------------------------- helpers
+
+def http(base, method, path, payload=None, timeout=5):
+    if method == "get":
+        return requests.get(base + path, timeout=timeout)
+    return requests.post(base + path, json=payload, timeout=timeout)
+
+
+def wait_protocol(base, idx, timeout=90):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            r = requests.get(base + "/api/protocol", timeout=3)
+            if r.status_code == 200 and ('"index":%d' % idx) in r.text:
+                return True
+        except requests.RequestException:
+            pass
+        time.sleep(1)
+    return False
+
+
+async def wait_notification(queue, want_type, key, iv, timeout=4.0):
+    """Consume notifications until one decrypts to the wanted message type."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            data = await asyncio.wait_for(queue.get(), timeout=max(0.1, deadline - time.time()))
+        except asyncio.TimeoutError:
+            break
+        try:
+            plain = wcu_decrypt(bytearray(data), key, iv)
+        except Exception as e:
+            print("  (decrypt failed: %s)" % e)
+            continue
+        if parse_type(plain) == want_type:
+            return plain
+    return None
+
+
+# ---------------------------------------------------------------- main
+
+async def run(base, switch, ck):
+    print("== 1. HTTP: ensure MoYu32 protocol, reset state ==")
+    if switch:
+        cur = http(base, "get", "/api/protocol").json().get("index")
+        if cur != 4:
+            http(base, "post", "/api/protocol", {"index": 4})
+            if not ck.check(wait_protocol(base, 4), "protocol switch to MoYu32"):
+                return
+        else:
+            print("   (already MoYu32)")
+    else:
+        ck.check(http(base, "get", "/api/protocol").json().get("index") == 4,
+                 "device already on MoYu32")
+    http(base, "post", "/api/moves/clear")
+    http(base, "post", "/api/reset")
+    time.sleep(0.3)
+
+    print("== 2. BLE scan: advertising identity ==")
+    devices = await BleakScanner.discover(timeout=8.0, return_adv=True)
+    target = None
+    for addr, (dev, adv) in devices.items():
+        if adv.local_name and adv.local_name.startswith("WCU_MY3"):
+            target = (dev, adv)
+            break
+    if not ck.check(target is not None, "scan finds WCU_MY3* device",
+                    "names seen: %s" % [a.local_name for _, a in devices.values() if a.local_name]):
+        return
+    dev, adv = target
+    ck.check(adv.local_name == EXPECT_NAME, "device name", adv.local_name)
+    ck.check(SERVICE_UUID in [u.lower() for u in adv.service_uuids],
+             "adv contains service UUID", adv.service_uuids)
+    mfr = adv.manufacturer_data or {}
+    cic, payload = next(iter(mfr.items())) if mfr else (None, None)
+    ck.check(cic == 0x0000, "manufacturer CIC == 0x0000", hex(cic) if cic is not None else "none")
+    if payload:
+        mac_recv = list(payload[-6:])[::-1]
+        ck.check(mac_recv == EXPECT_MAC, "mfr data last-6 reversed == MAC",
+                 "got %s" % ":".join("%02X" % b for b in mac_recv))
+
+    print("== 3. GATT connect: info/state/battery requests ==")
+    queue = asyncio.Queue()
+
+    def on_notify(_handle, data):
+        queue.put_nowait(bytes(data))
+
+    async with BleakClient(dev.address, disconnected_callback=None) as client:
+        ck.check(client.is_connected, "connected")
+        svcs = [str(s.uuid).lower() for s in client.services]
+        ck.check(SERVICE_UUID in svcs, "GATT service present", svcs)
+        chars = [str(c.uuid).lower() for s in client.services for c in s.characteristics]
+        ck.check(CHR_READ_UUID in chars and CHR_WRITE_UUID in chars,
+                 "read/write characteristics present")
+
+        mac_bytes = EXPECT_MAC  # validated against adv above
+        key, iv = derive_key_iv(mac_bytes)
+        await client.start_notify(CHR_READ_UUID, on_notify)
+        time.sleep(0.2)  # let the subscribe-time initial facelets arrive
+
+        def send_request(opcode):
+            req = bytearray(20)
+            req[0] = opcode
+            return client.write_gatt_char(CHR_WRITE_UUID, bytes(wcu_encrypt(req, key, iv)))
+
+        # 161 hardware info
+        await send_request(161)
+        plain = await wait_notification(queue, 161, key, iv)
+        if ck.check(plain is not None, "161 info reply"):
+            name, hw, sw = parse_hardware_msg(plain)
+            ck.check(name == "WCU_MY32", "161 device name", name)
+            ck.check(hw == "1.0", "161 hw version", hw)
+            ck.check(sw == "2.0", "161 sw version", sw)
+
+        # 163 initial state (solved after reset)
+        await send_request(163)
+        plain = await wait_notification(queue, 163, key, iv)
+        if ck.check(plain is not None, "163 state reply"):
+            move_cnt, facelets = parse_facelet_msg(plain)
+            ck.check(facelets == cube_sim.SOLVED_FACELETS, "163 solved facelets",
+                     facelets)
+            serial = move_cnt
+        else:
+            serial = 0
+
+        # 164 battery
+        await send_request(164)
+        plain = await wait_notification(queue, 164, key, iv)
+        if ck.check(plain is not None, "164 battery reply"):
+            level = int(bits_of(plain)[8:16], 2)
+            ck.check(0 <= level <= 100, "164 battery level", level)
+
+        print("== 4. Move notifications (165) ==")
+        sim = cube_sim.CubeState()
+
+        async def drain_queue():
+            while not queue.empty():
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
+        async def move_test(mv):
+            nonlocal serial
+            face, d = cube_sim.parse_notation(mv)
+            exp_face = FBUDLR[URFDLB_TO_FBUDLR[face]]
+            # one 165 notification per queued entry: X2 pushes two CW quarters
+            expected = [exp_face + ("'" if d == 1 else "")] if d != 2 else [exp_face] * 2
+            http(base, "post", "/api/move", {"move": mv})
+            got = []
+            for _ in expected:
+                plain = await wait_notification(queue, 165, key, iv, timeout=3.0)
+                if plain is None:
+                    ck.check(False, "165 notification for %s" % mv)
+                    return
+                mc, moves, times = parse_move_msg(plain)
+                got.append(moves[0])
+                ck.check(mc == (serial + len(got)) % 256,
+                         "165 moveCnt %d -> %d" % (serial, mc), mc)
+            ck.check(got == expected, "165 slot0 moves == %s" % mv, got)
+            serial = (serial + len(expected)) % 256
+            cube_sim.apply_face_dir(sim, face, d)
+            # discard the intermediate per-quarter 163 pushes, then ask for state
+            await drain_queue()
+            await send_request(163)
+            plain = await wait_notification(queue, 163, key, iv)
+            if ck.check(plain is not None, "163 after %s" % mv):
+                _, facelets = parse_facelet_msg(plain)
+                ck.check(facelets == cube_sim.to_facelet_string(sim),
+                         "163 facelets match sim after %s" % mv, facelets)
+
+        for mv in ["R", "U'", "F2", "L", "D'", "B2"]:
+            await move_test(mv)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--ip", default="192.168.50.246", help="device IP")
+    ap.add_argument("--no-switch", action="store_true",
+                    help="do not switch the device to MoYu32 first")
+    args = ap.parse_args()
+
+    base = "http://%s" % args.ip
+    ck = Check()
+    asyncio.run(run(base, not args.no_switch, ck))
+
+    print("\n" + "=" * 50)
+    if ck.failures:
+        print("FAILED: %d/%d checks" % (len(ck.failures), ck.count))
+        for label, detail in ck.failures:
+            print("  [FAIL] %s: %s" % (label, detail))
+        sys.exit(1)
+    print("PASSED: %d/%d checks" % (ck.count, ck.count))
+
+
+if __name__ == "__main__":
+    main()

@@ -167,7 +167,7 @@ pub fn build_facelets(proto: Protocol, serial: u16, state: &CubeState) -> Vec<u8
             buf[19] = (crc >> 8) as u8;
             buf.to_vec()
         }
-        Protocol::MoYu32 => build_facelets_moyu32(state),
+        Protocol::MoYu32 => build_facelets_moyu32(serial, state),
         Protocol::QiYi => {
             let fb = &build_facelets_qiyi(state);
             let fb_packed = &pack_facelets_nibble(fb);
@@ -578,48 +578,47 @@ pub fn to_facelet_string(state: &CubeState) -> [u8; 54] {
     f
 }
 
-// ==================== MoYu32 ====================
+// ==================== MoYu32 (WCU) ====================
 
-const MOYU_FACE_ORDER: [usize; 6] = [2, 5, 0, 3, 4, 1];
+// The WCU wire format uses FBUDLR order for both faces and colors (F=0 B=1 U=2 D=3
+// L=4 R=5). This maps our internal URFDLB index (U=0 R=1 F=2 D=3 L=4 B=5) onto it;
+// read as a list it is also the URFDLB faces in WCU storage order (F, B, U, D, L, R).
+// Reference: csTimer src/js/hardware/moyu32cube.js
+const URFDLB_TO_FBUDLR: [u32; 6] = [2, 5, 0, 3, 4, 1];
 
-fn moyu_facelet_bit(state: &CubeState) -> Vec<u8> {
-    let mut bits: Vec<u8> = Vec::new();
-    let c2f = &CORNER_FACELET;
-    let c2c = &CORNER_COLOR;
-    let e2f = &EDGE_FACELET;
-    let e2c = &EDGE_COLOR;
-    let colors = [0u8, 1, 2, 3, 4, 5];
+fn facelet_colors(state: &CubeState) -> [u8; 54] {
     let mut facelets = [0u8; 54];
-    for i in 0..6 { facelets[CENTER_FACELET[i]] = colors[i]; }
+    for i in 0..6 { facelets[CENTER_FACELET[i]] = i as u8; }
     for i in 0..8 {
         let j = state.cp[i] as usize;
         let ori = state.co[i] as usize;
         for k in 0..3 {
-            facelets[c2f[i][(k + ori) % 3]] = c2c[j][k];
+            facelets[CORNER_FACELET[i][(k + ori) % 3]] = CORNER_COLOR[j][k];
         }
     }
     for i in 0..12 {
         let j = state.ep[i] as usize;
         let ori = state.eo[i] as usize;
         for k in 0..2 {
-            facelets[e2f[i][(k + ori) % 2]] = e2c[j][k];
+            facelets[EDGE_FACELET[i][(k + ori) % 2]] = EDGE_COLOR[j][k];
         }
     }
-    for &m in MOYU_FACE_ORDER.iter() {
-        let base = m * 9;
-        for s in 0..9 {
-            bits.push(facelets[base + s] & 0x7);
-        }
-    }
-    bits
+    facelets
 }
 
-pub fn build_facelets_moyu32(state: &CubeState) -> Vec<u8> {
-    // 8-bit header + 54 facelets * 3 bits = 170 bits -> 22 bytes (20 overflowed)
-    let mut w = BitWriter::new(22);
+pub fn build_facelets_moyu32(serial: u16, state: &CubeState) -> Vec<u8> {
+    // WCU state message: [163 (8b)][6 faces x 8 stickers x 3b, FBUDLR order, centers
+    // implied][moveCnt (8b)] == 160 bits == 20 bytes
+    let mut w = BitWriter::new(20);
     w.write_bits(163, 8);
-    let bits = moyu_facelet_bit(state);
-    for b in bits { w.write_bits(b as u32, 3); }
+    let facelets = facelet_colors(state);
+    for &face in URFDLB_TO_FBUDLR.iter() {
+        let base = face as usize * 9;
+        for j in [0usize, 1, 2, 3, 5, 6, 7, 8] { // center (pos 4) is implied
+            w.write_bits(URFDLB_TO_FBUDLR[facelets[base + j] as usize], 3);
+        }
+    }
+    w.write_bits(serial as u32 & 0xFF, 8);
     w.finish()
 }
 
@@ -631,34 +630,38 @@ pub fn build_battery_moyu32(level: u8) -> Vec<u8> {
 }
 
 pub fn build_hardware_moyu32() -> Vec<u8> {
+    // WCU info message: [161 (8b)][name 8 bytes ASCII][hw major/minor 8b+8b]
+    // [sw major/minor 8b+8b]
     let mut w = BitWriter::new(20);
     w.write_bits(161, 8);
-    let name = b"WCU_MY32";
-    for b in name { w.write_bits(*b as u32, 8); }
-    w.write_bits(1, 4);
-    w.write_bits(2, 4);
+    for b in b"WCU_MY32" { w.write_bits(*b as u32, 8); }
+    w.write_bits(1, 8); // hw major
+    w.write_bits(0, 8); // hw minor
+    w.write_bits(2, 8); // sw major
+    w.write_bits(0, 8); // sw minor
     w.finish()
 }
 
 pub fn build_move_moyu32(serial: u16, history: &[(u8, u8, u16)]) -> Vec<u8> {
-    // fixed layout: 8+8+40+25+56+80 = 217 bits -> 28 bytes (20 overflowed)
-    let mut w = BitWriter::new(28);
+    // WCU move message: [165 (8b)][5 x elapsed 16b][moveCnt 8b][5 x move code 5b].
+    // Move code = (face << 1) | dir in FBUDLR order; slot 0 = newest; code >= 12
+    // marks an empty slot. Padded to 20 bytes.
+    let mut w = BitWriter::new(20);
     w.write_bits(165, 8);
-    w.write_bits(serial as u32 & 0xFF, 8);
-    for _ in 0..40 { w.write_bits(0, 1); }
-    let n = (history.len() as u32).min(5);
+    let n = history.len().min(5);
     for i in 0..5 {
-        if i < n as usize {
-            let (face, dir, _) = history[i];
-            let code = ((face as u32) << 2) | (dir as u32);
-            w.write_bits(code, 5);
-        } else { w.write_bits(0, 5); }
+        let elapsed = if i < n { history[i].2 as u32 } else { 0 };
+        w.write_bits(elapsed, 16);
     }
-    for _ in 0..7 { w.write_bits(0, 8); }
+    w.write_bits(serial as u32 & 0xFF, 8);
     for i in 0..5 {
-        if i < n as usize {
-            w.write_bits(history[i].2 as u32, 16);
-        } else { w.write_bits(0, 16); }
+        if i < n {
+            let (face, dir, _) = history[i];
+            let code = (URFDLB_TO_FBUDLR[face as usize] << 1) | dir as u32;
+            w.write_bits(code, 5);
+        } else {
+            w.write_bits(0b11111, 5);
+        }
     }
     w.finish()
 }

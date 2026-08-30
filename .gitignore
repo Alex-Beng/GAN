@@ -12,4 +12,5 @@ __pycache__
 /scripts/*
 !scripts/proto_test.py
 !scripts/cube_sim.py
+!scripts/ble_check.py
 .opencode

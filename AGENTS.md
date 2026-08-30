@@ -26,6 +26,7 @@ Gen2 (GANi3SB), Gen3 (GAN12UI), Gen4 (GAN15UI), Gan251, MoYu32 (WCU), QiYi (Smar
 - Cube command line: `scripts/cube_cmd.py` (send face moves via HTTP)
 - CFOP/OLL solver tests: many `scripts/test_*.py` files
 - Protocol regression over USB: `python scripts/proto_test.py` — builds, flashes via espflash, parses device IP from boot logs, runs per-protocol HTTP matrix (switch/reset/moves/scramble/invalid) and fails on panic/reboot markers in the serial log. Options: `--port COMx`, `--ip`, `--protocols gen2,moyu32`, `--quick`, `--skip-devices`. Expected values come from `scripts/cube_sim.py` (mirror of `protocol.rs` cube math — keep in sync).
+- MoYu32 BLE conformance: `python scripts/ble_check.py` — bleak-based; validates advertising identity (name/MAC/CIC/service UUID) and the WCU wire format (161/163/164/165, crypto) against the csTimer reference. Requires `pip install bleak pycryptodome`.
 
 ## Simulation & Debug
 
