@@ -526,7 +526,15 @@ pub async fn run(
             }
         }
 
-        log::info!("Deinitializing BLE for protocol restart");
-        let _ = BLEDevice::deinit_full();
+        // esp32-nimble 0.12: deinit_full() resets advertising AFTER the host
+        // stack is freed (use-after-free panic), and deinit() alone leaks the
+        // stale GATT services in the BLE_SERVER static. A clean reboot is the
+        // only safe way to switch protocol + MAC: NVS holds the new protocol,
+        // and the fresh session sets the MAC at startup.
+        log::info!("Restarting device for protocol switch");
+        Timer::after(Duration::from_millis(500)).await;
+        unsafe {
+            esp_idf_svc::sys::esp_restart();
+        }
     }
 }
