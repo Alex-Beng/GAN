@@ -342,7 +342,7 @@ pub async fn run(
                 }
                 protocol::IncomingCommand::Hardware => {
                     match proto_cl {
-                        Protocol::Gen2 | Protocol::Gen3 => {
+                        Protocol::Gen2 | Protocol::Gen3 | Protocol::MoYu32 => {
                             let mut msg = protocol::build_hardware_single(proto_cl);
                             ble_encrypt(proto_cl, &mut msg, &key_cl, &iv_cl);
                             state_char.set_value(&msg).notify();
@@ -400,13 +400,20 @@ pub async fn run(
             mfr_payload[5 + i] = cfg.mac[5 - i];
         }
 
+        // ADV: flags + 128-bit service UUID (clients filter on it) = 21 of 31 bytes.
+        // mfr data + name do not fit alongside the UUID, so they go to the scan
+        // response (active scanners combine both into one advertisement view).
         let mut adv_data = esp32_nimble::BLEAdvertisementData::new();
-        adv_data.manufacturer_data(&mfr_payload);
+        adv_data.add_service_uuid(BleUuid::from_uuid128_string(cfg.service_uuid).unwrap());
 
+        // Scan response: Manufacturer Specific Data + Complete Local Name (<= 28 of 31).
         let name_bytes = cfg.device_name.as_bytes();
         let mut scan_resp_raw: Vec<u8> = Vec::new();
+        scan_resp_raw.push(12);   // AD length: type + 11 bytes
+        scan_resp_raw.push(0xFF); // Manufacturer Specific Data
+        scan_resp_raw.extend_from_slice(&mfr_payload);
         scan_resp_raw.push(name_bytes.len() as u8 + 1);
-        scan_resp_raw.push(0x09);
+        scan_resp_raw.push(0x09); // Complete Local Name
         scan_resp_raw.extend_from_slice(name_bytes);
 
         {

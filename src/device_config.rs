@@ -78,7 +78,9 @@ const MAC_GEN2: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xCA];
 const MAC_GEN3: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xCB];
 const MAC_GEN4: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xCC];
 const MAC_GAN251: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xCD];
-const MAC_MOYU32: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xCE];
+// Real WCU cubes: name "WCU_MY32_XXXX" with MAC CF:30:16:00:XX:XX (XXXX = MAC suffix,
+// cf. csTimer moyu32cube.js). Unbound cubes advertise manufacturer CIC 0x0000.
+const MAC_MOYU32: [u8; 6] = [0xCF, 0x30, 0x16, 0x00, 0xA4, 0xCE];
 const MAC_QIYI: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xCF];
 const MAC_ROBOT: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xD0];
 const MAC_TIMER: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xD1];
@@ -195,7 +197,7 @@ const CFG_GAN251: ProtoCfg = ProtoCfg {
 
 const CFG_MOYU32: ProtoCfg = ProtoCfg {
     proto: Protocol::MoYu32,
-    device_name: "WCU_MY32_EMU",
+    device_name: "WCU_MY32_A4CE",
     mac: &MAC_MOYU32,
     service_uuid: "0783b03e-7735-b5a0-1760-a305d2795cb0",
     cmd_uuid: "0783b03e-7735-b5a0-1760-a305d2795cb2",
@@ -208,7 +210,7 @@ const CFG_MOYU32: ProtoCfg = ProtoCfg {
     ota_version: C_OTA_VERSION,
     base_key: &C_KEY_MOYU32,
     base_iv: &C_IV_MOYU32,
-    mfr_cic: 0x0001,
+    mfr_cic: 0x0000, // unbound cube; bound cubes use account-derived CIC
     mfr_extra: C_MFR_EXTRA,
 };
 
