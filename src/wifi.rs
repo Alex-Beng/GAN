@@ -250,6 +250,23 @@ fn wait_netif_up_poll(
     false
 }
 
+/// Wait for DHCP to assign a non-zero STA IP; netif-up alone is not enough.
+fn wait_sta_ip(wifi: &mut BlockingWifi<EspWifi>, timeout_ms: u64) -> Option<String> {
+    let step = 200u64;
+    let mut elapsed = 0u64;
+    while elapsed < timeout_ms {
+        if let Ok(info) = wifi.wifi().sta_netif().get_ip_info() {
+            let o = info.ip.octets();
+            if o != [0, 0, 0, 0] {
+                return Some(format!("{}.{}.{}.{}", o[0], o[1], o[2], o[3]));
+            }
+        }
+        thread::sleep(Duration::from_millis(step));
+        elapsed += step;
+    }
+    None
+}
+
 // --- Mode start helpers ---
 
 fn start_ap(wifi: &mut BlockingWifi<EspWifi>) -> anyhow::Result<()> {
@@ -287,8 +304,8 @@ fn start_sta_only(wifi: &mut BlockingWifi<EspWifi>, ssid: &str, pass: &str) -> b
         }
         let up = wait_netif_up_poll(|| wifi.wifi().sta_netif().is_netif_up(), 10000);
         if up {
-            let ip = wifi.wifi().sta_netif().get_ip_info().map(|i| i.ip);
-            log::info!("STA-only connected: SSID={}, IP={:?}", ssid, ip);
+            let ip = wait_sta_ip(wifi, 8000).unwrap_or_else(|| "0.0.0.0".to_string());
+            log::info!("STA-only connected: SSID={}, IP={}", ssid, ip);
             return true;
         }
         log::warn!("STA netif not up on attempt {}", attempt);
@@ -332,8 +349,8 @@ fn start_mixed(
         }
         let up = wait_netif_up_poll(|| wifi.wifi().sta_netif().is_netif_up(), 6000);
         if up {
-            let ip = wifi.wifi().sta_netif().get_ip_info().map(|i| i.ip);
-            log::info!("WiFi STA connected: SSID={}, IP={:?}", ssid, ip);
+            let ip = wait_sta_ip(wifi, 8000).unwrap_or_else(|| "0.0.0.0".to_string());
+            log::info!("WiFi STA connected: SSID={}, IP={}", ssid, ip);
             return Ok(());
         }
         log::warn!("STA netif not up on attempt {}", attempt);
@@ -386,7 +403,7 @@ pub fn start_wifi(
     }
     thread::sleep(Duration::from_millis(500));
 
-    let scan_results = match wifi.scan() {
+    let mut scan_results = match wifi.scan() {
         Ok(r) => r,
         Err(e) => {
             log::warn!("WiFi scan failed: {:?}, starting AP", e);
@@ -395,6 +412,33 @@ pub fn start_wifi(
             return Ok(Arc::new(Mutex::new(wifi)));
         }
     };
+
+    // A single scan can miss in-range networks in weak RF environments;
+    // retry once before giving up and falling back to AP.
+    if !scan_results
+        .iter()
+        .any(|ap| saved.iter().any(|n| n.ssid == ap.ssid.as_str()))
+    {
+        log::warn!("No known network found in scan, retrying scan...");
+        wifi.stop().ok();
+        thread::sleep(Duration::from_millis(500));
+        if wifi
+            .set_configuration(&Configuration::Client(ClientConfiguration {
+                ssid: "".try_into().unwrap(),
+                password: "".try_into().unwrap(),
+                auth_method: AuthMethod::None,
+                ..Default::default()
+            }))
+            .is_ok()
+            && wifi.start().is_ok()
+        {
+            thread::sleep(Duration::from_millis(500));
+            match wifi.scan() {
+                Ok(r) => scan_results = r,
+                Err(e) => log::warn!("Retry scan failed: {:?}", e),
+            }
+        }
+    }
 
     wifi.stop().ok();
     thread::sleep(Duration::from_millis(300));
@@ -488,12 +532,8 @@ pub fn disable_ap(wifi: &SharedWifi, nvs: &EspDefaultNvsPartition) -> anyhow::Re
             }
             let up = wait_netif_up_poll(|| w.wifi().sta_netif().is_netif_up(), 10000);
             if up {
-                let ip = w.wifi().sta_netif().get_ip_info().map(|i| i.ip);
-                log::info!(
-                    "AP disabled, STA-only connected to {}, IP={:?}",
-                    network.ssid,
-                    ip
-                );
+                let ip = wait_sta_ip(&mut w, 8000).unwrap_or_else(|| "0.0.0.0".to_string());
+                log::info!("AP disabled, STA-only connected to {}, IP={}", network.ssid, ip);
                 return Ok(());
             }
             let _ = w.disconnect();
@@ -663,9 +703,14 @@ pub fn switch_mode(
         };
         let _ = save_sta_network(nvs, ssid, &actual_pass);
         start_mixed(&mut w, ssid, &actual_pass)?;
-        let ip = w.wifi().sta_netif().get_ip_info();
-        match ip {
-            Ok(ip) => Ok(format!("Mixed:AP+STA:{}:{:?}", ssid, ip)),
+        match w.wifi().sta_netif().get_ip_info() {
+            Ok(info) => {
+                let o = info.ip.octets();
+                Ok(format!(
+                    "Mixed:AP+STA:{}:{}.{}.{}.{}",
+                    ssid, o[0], o[1], o[2], o[3]
+                ))
+            }
             Err(_) => Ok(format!("Mixed:AP only (STA {} failed)", ssid)),
         }
     } else {
