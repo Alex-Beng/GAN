@@ -615,7 +615,8 @@ fn moyu_facelet_bit(state: &CubeState) -> Vec<u8> {
 }
 
 pub fn build_facelets_moyu32(state: &CubeState) -> Vec<u8> {
-    let mut w = BitWriter::new(20);
+    // 8-bit header + 54 facelets * 3 bits = 170 bits -> 22 bytes (20 overflowed)
+    let mut w = BitWriter::new(22);
     w.write_bits(163, 8);
     let bits = moyu_facelet_bit(state);
     for b in bits { w.write_bits(b as u32, 3); }
@@ -640,7 +641,8 @@ pub fn build_hardware_moyu32() -> Vec<u8> {
 }
 
 pub fn build_move_moyu32(serial: u16, history: &[(u8, u8, u16)]) -> Vec<u8> {
-    let mut w = BitWriter::new(20);
+    // fixed layout: 8+8+40+25+56+80 = 217 bits -> 28 bytes (20 overflowed)
+    let mut w = BitWriter::new(28);
     w.write_bits(165, 8);
     w.write_bits(serial as u32 & 0xFF, 8);
     for _ in 0..40 { w.write_bits(0, 1); }
