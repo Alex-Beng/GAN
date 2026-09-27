@@ -14,3 +14,4 @@ __pycache__
 !scripts/cube_sim.py
 !scripts/ble_check.py
 .opencode
+/dump
