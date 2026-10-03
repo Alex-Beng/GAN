@@ -262,7 +262,7 @@ async def run(base, switch, ck):
             name, hw, sw = parse_hardware_msg(plain)
             ck.check(name == "WCU_MY32", "161 device name", name)
             ck.check(hw == "1.0", "161 hw version", hw)
-            ck.check(sw == "2.0", "161 sw version", sw)
+            ck.check(sw == "2.12", "161 sw version", sw)
 
         # 163 initial state (solved after reset)
         await send_request(163)
@@ -324,7 +324,71 @@ async def run(base, switch, ck):
         for mv in ["R", "U'", "F2", "L", "D'", "B2"]:
             await move_test(mv)
 
-        print("== 5. Control opcodes (170/172/173/174/168) ==")
+        print("== 5. OTA (02f00000 service, plaintext) ==")
+        OTA_SERVICE = "02f00000-0000-0000-0000-00000000fe00"
+        OTA_WRITE = "02f00000-0000-0000-0000-00000000ff01"
+        OTA_NOTIFY = "02f00000-0000-0000-0000-00000000ff02"
+
+        svcs = [str(s.uuid).lower() for s in client.services]
+        ck.check(OTA_SERVICE in svcs, "OTA service present", svcs)
+
+        otaq = asyncio.Queue()
+
+        def on_ota(_handle, data):
+            otaq.put_nowait(bytes(data))
+
+        await client.start_notify(OTA_NOTIFY, on_ota)
+
+        async def ota_req(payload, timeout=2.0):
+            while not otaq.empty():
+                try:
+                    otaq.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            await client.write_gatt_char(OTA_WRITE, bytes(payload), response=False)
+            try:
+                return await asyncio.wait_for(otaq.get(), timeout)
+            except asyncio.TimeoutError:
+                return None
+
+        # 01 = start address -> [00,01,len16, base LE4]
+        raw = await ota_req(bytes([0x01, 0x03, 0, 0, 0, 0, 0]))
+        if ck.check(raw is not None and len(raw) >= 8 and raw[0] == 0 and raw[1] == 1,
+                    "OTA start-address reply", raw.hex() if raw else None):
+            ck.check(int.from_bytes(raw[4:8], "little") == 0x00010000,
+                     "OTA base address", hex(int.from_bytes(raw[4:8], "little")))
+
+        # 02 = version -> [00,02,len16, ver LE4]
+        raw = await ota_req(bytes([0x02, 0x04, 0, 0, 0, 0, 0]))
+        if ck.check(raw is not None and len(raw) >= 8 and raw[1] == 2,
+                    "OTA version reply", raw.hex() if raw else None):
+            ck.check(int.from_bytes(raw[4:8], "little") == 2012,
+                     "OTA version value", int.from_bytes(raw[4:8], "little"))
+
+        # 03 = erase(addr) -> echo addr
+        addr = 0x00010000
+        raw = await ota_req(bytes([0x03, 0x07, 0x00]) + addr.to_bytes(4, "little"))
+        if ck.check(raw is not None and len(raw) >= 8 and raw[1] == 3,
+                    "OTA erase reply", raw.hex() if raw else None):
+            ck.check(int.from_bytes(raw[4:8], "little") == addr, "OTA erase echo")
+
+        # 05 = sender data(base,len,data) -> [00,05,len16, base LE4, len LE2]
+        base, ln = 0x00010000, 235
+        req = bytes([0x05, 0x09, 0x00]) + base.to_bytes(4, "little") \
+            + ln.to_bytes(2, "little") + bytes(ln)
+        raw = await ota_req(req)
+        if ck.check(raw is not None and len(raw) >= 10 and raw[1] == 5,
+                    "OTA sender-data reply", raw.hex() if raw else None):
+            ck.check(int.from_bytes(raw[4:8], "little") == base, "OTA sender-data base")
+            ck.check(int.from_bytes(raw[8:10], "little") == ln, "OTA sender-data len")
+
+        # 09 = update end -> no reply expected
+        await client.write_gatt_char(OTA_WRITE,
+            bytes([0x09, 0x0A, 0x00]) + (1000).to_bytes(4, "little") + (0).to_bytes(4, "little"),
+            response=False)
+        ck.check(True, "OTA update-end sent (no reply expected)")
+
+        print("== 6. Control opcodes (170/172/173/174/168) ==")
 
         def wbits(buf, bitpos, value, count):
             for i in range(count):

@@ -685,8 +685,8 @@ pub fn build_hardware_moyu32(name: &str) -> Vec<u8> {
     for b in nbuf { w.write_bits(b as u32, 8); }
     w.write_bits(1, 8); // hw major
     w.write_bits(0, 8); // hw minor
-    w.write_bits(2, 8); // sw major
-    w.write_bits(0, 8); // sw minor
+    w.write_bits(crate::device_config::MOYU32_SW_MAJOR as u32, 8); // sw major
+    w.write_bits(crate::device_config::MOYU32_SW_MINOR as u32, 8); // sw minor
     // 5 flags: isOutage, isGyroEnabled, isGyroCorrect, isMagWorking, isMagCalibrated
     for _ in 0..5 { w.write_bits(0, 1); }
     w.write_bits(80, 8); // battery level
@@ -760,6 +760,52 @@ pub fn build_disconnect_moyu32() -> Vec<u8> {
     let mut w = BitWriter::new(20);
     w.write_bits(160, 8);
     w.finish()
+}
+
+// ==================== WCU OTA (02f00000-...fe00, plaintext) ====================
+
+/// Decoded OTA request written by the WCU app to characteristic `...ff01`.
+/// Formats follow BluetoothProcessor.OTASender.
+#[derive(Debug, Clone, Copy)]
+pub enum OtaRequest {
+    StartAddress,
+    Version,
+    Erase { addr: u32 },
+    SenderData { base: u32, len: u16 },
+    UpdateEnd,
+    Unknown,
+}
+
+fn le_u32(data: &[u8], off: usize) -> u32 {
+    let mut b = [0u8; 4];
+    for i in 0..4 { b[i] = *data.get(off + i).unwrap_or(&0); }
+    u32::from_le_bytes(b)
+}
+
+pub fn parse_ota_request(data: &[u8]) -> OtaRequest {
+    match data.get(0) {
+        Some(0x01) => OtaRequest::StartAddress,
+        Some(0x02) => OtaRequest::Version,
+        Some(0x03) => OtaRequest::Erase { addr: le_u32(data, 3) },
+        Some(0x05) => OtaRequest::SenderData {
+            base: le_u32(data, 3),
+            len: u16::from_le_bytes([*data.get(7).unwrap_or(&0), *data.get(8).unwrap_or(&0)]),
+        },
+        Some(0x09) => OtaRequest::UpdateEnd,
+        _ => OtaRequest::Unknown,
+    }
+}
+
+/// Build an OTA reply as expected by BluetoothProcessor.OTAProcess:
+/// `[flag(0=OK)][cmd][len16 LE][payload...]`.
+pub fn build_ota_reply(cmd: u8, payload: &[u8]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(4 + payload.len());
+    v.push(0x00);
+    v.push(cmd);
+    v.push((payload.len() & 0xFF) as u8);
+    v.push((payload.len() >> 8) as u8);
+    v.extend_from_slice(payload);
+    v
 }
 
 pub fn build_move_moyu32(serial: u16, history: &[(u8, u8, u16)]) -> Vec<u8> {

@@ -93,67 +93,122 @@ pub async fn run(
 
         let service = server.create_service(BleUuid::from_uuid128_string(cfg.service_uuid).unwrap());
 
-        let ota_service = server.create_service(BleUuid::from_uuid128_string(cfg.ota_service_uuid).unwrap());
-
-        let ota_version_char = ota_service.lock().create_characteristic(
-            BleUuid::from_uuid128_string(cfg.ota_version_uuid).unwrap(),
-            NimbleProperties::READ,
-        );
-        ota_version_char.lock().set_value(cfg.ota_version);
-
-        // OTA_ERR notify characteristic (must be created before FW_INFO for closure capture)
-        let ota_notify_char = ota_service.lock().create_characteristic(
-            BleUuid::from_uuid128_string(cfg.ota_notify_uuid).unwrap(),
-            NimbleProperties::READ | NimbleProperties::NOTIFY,
-        );
-        let ota_notify_char_sub = ota_notify_char.clone();
-        ota_notify_char.lock().on_subscribe(move |_char, _desc, _cur_notify| {
-            log::info!("OTA_NOTIFY subscribed");
-        });
-
-        // FW_DATA: receive firmware binary data
-        let ota_data_char = ota_service.lock().create_characteristic(
-            BleUuid::from_uuid128_string(cfg.ota_data_uuid).unwrap(),
-            NimbleProperties::WRITE | NimbleProperties::WRITE_NO_RSP,
-        );
-        let ota_fw_bytes = Arc::new(Mutex::new(Vec::new()));
-        let ota_fw_bytes_cl = ota_fw_bytes.clone();
-        ota_data_char.lock().on_write(move |args| {
-            let data = args.recv_data();
-            log::info!("OTA_DATA ({} bytes): {:02X?}", data.len(), data);
-            ota_fw_bytes_cl.lock().unwrap().extend_from_slice(data);
-        });
-
-        // FW_INFO (f95a5034-...): OTA control commands
-        let ota_write_char = ota_service.lock().create_characteristic(
-            BleUuid::from_uuid128_string(cfg.ota_write_uuid).unwrap(),
-            NimbleProperties::WRITE | NimbleProperties::WRITE_NO_RSP,
-        );
-        let ota_fw_bytes_cl2 = ota_fw_bytes.clone();
-        let ota_notify_char_cl = ota_notify_char_sub.clone();
-        ota_write_char.lock().on_write(move |args| {
-            let data = args.recv_data();
-            log::info!("OTA_CMD ({} bytes): {:02X?}", data.len(), data);
-            if data.len() >= 1 {
-                match data[0] {
-                    0x01 => {
-                        log::info!("OTA: start update");
-                        // Notify progress
-                        let resp = vec![0x01u8, 0x00]; // status=1, progress=0
-                        ota_notify_char_cl.lock().set_value(&resp).notify();
+        if proto == Protocol::MoYu32 {
+            // WCU OTA: service 02f00000-...fe00, write ...ff01, notify ...ff02.
+            // Request/reply are plaintext (BluetoothProcessor.OTASender uses
+            // NoEncryptorAndWrite; OTAProcess parses raw bytes).
+            let ota_service = server.create_service(BleUuid::from_uuid128_string(cfg.ota_service_uuid).unwrap());
+            let ota_notify_char = ota_service.lock().create_characteristic(
+                BleUuid::from_uuid128_string(cfg.ota_notify_uuid).unwrap(),
+                NimbleProperties::READ | NimbleProperties::NOTIFY,
+            );
+            ota_notify_char.lock().on_subscribe(|_c, _d, _n| {
+                log::info!("OTA_NOTIFY subscribed");
+            });
+            let ota_notify_cl = ota_notify_char.clone();
+            let ota_write_char = ota_service.lock().create_characteristic(
+                BleUuid::from_uuid128_string(cfg.ota_write_uuid).unwrap(),
+                NimbleProperties::WRITE | NimbleProperties::WRITE_NO_RSP,
+            );
+            ota_write_char.lock().on_write(move |args| {
+                let data = args.recv_data();
+                log::info!("MoYu32 OTA raw ({} bytes): {:02X?}", data.len(), data);
+                let req = protocol::parse_ota_request(data);
+                log::info!("MoYu32 OTA req: {:?}", req);
+                let mut notify = ota_notify_cl.lock();
+                match req {
+                    protocol::OtaRequest::StartAddress => {
+                        let msg = protocol::build_ota_reply(1, &crate::device_config::MOYU32_OTA_BASE.to_le_bytes());
+                        notify.set_value(&msg).notify();
                     }
-                    0x02 => log::info!("OTA: check version"),
-                    0x03 => {
-                        let sz = ota_fw_bytes_cl2.lock().unwrap().len();
-                        log::info!("OTA: verify firmware ({} bytes)", sz);
+                    protocol::OtaRequest::Version => {
+                        let ver = (crate::device_config::MOYU32_SW_MAJOR as u32) * 1000
+                            + crate::device_config::MOYU32_SW_MINOR as u32;
+                        let msg = protocol::build_ota_reply(2, &ver.to_le_bytes());
+                        notify.set_value(&msg).notify();
                     }
-                    0x04 => {
-                        log::info!("OTA: reboot");
+                    protocol::OtaRequest::Erase { addr } => {
+                        let msg = protocol::build_ota_reply(3, &addr.to_le_bytes());
+                        notify.set_value(&msg).notify();
                     }
-                    _ => log::info!("OTA: unknown cmd 0x{:02X}", data[0]),
+                    protocol::OtaRequest::SenderData { base, len } => {
+                        let mut payload = Vec::with_capacity(6);
+                        payload.extend_from_slice(&base.to_le_bytes());
+                        payload.extend_from_slice(&len.to_le_bytes());
+                        let msg = protocol::build_ota_reply(5, &payload);
+                        notify.set_value(&msg).notify();
+                    }
+                    protocol::OtaRequest::UpdateEnd => {
+                        log::info!("MoYu32 OTA update end (no reply)");
+                    }
+                    protocol::OtaRequest::Unknown => {
+                        log::warn!("MoYu32 OTA unknown request: {:02X?}", data);
+                    }
                 }
-            }
-        });
+            });
+        } else {
+            let ota_service = server.create_service(BleUuid::from_uuid128_string(cfg.ota_service_uuid).unwrap());
+
+            let ota_version_char = ota_service.lock().create_characteristic(
+                BleUuid::from_uuid128_string(cfg.ota_version_uuid).unwrap(),
+                NimbleProperties::READ,
+            );
+            ota_version_char.lock().set_value(cfg.ota_version);
+
+            // OTA_ERR notify characteristic (must be created before FW_INFO for closure capture)
+            let ota_notify_char = ota_service.lock().create_characteristic(
+                BleUuid::from_uuid128_string(cfg.ota_notify_uuid).unwrap(),
+                NimbleProperties::READ | NimbleProperties::NOTIFY,
+            );
+            let ota_notify_char_sub = ota_notify_char.clone();
+            ota_notify_char.lock().on_subscribe(move |_char, _desc, _cur_notify| {
+                log::info!("OTA_NOTIFY subscribed");
+            });
+
+            // FW_DATA: receive firmware binary data
+            let ota_data_char = ota_service.lock().create_characteristic(
+                BleUuid::from_uuid128_string(cfg.ota_data_uuid).unwrap(),
+                NimbleProperties::WRITE | NimbleProperties::WRITE_NO_RSP,
+            );
+            let ota_fw_bytes = Arc::new(Mutex::new(Vec::new()));
+            let ota_fw_bytes_cl = ota_fw_bytes.clone();
+            ota_data_char.lock().on_write(move |args| {
+                let data = args.recv_data();
+                log::info!("OTA_DATA ({} bytes): {:02X?}", data.len(), data);
+                ota_fw_bytes_cl.lock().unwrap().extend_from_slice(data);
+            });
+
+            // FW_INFO (f95a5034-...): OTA control commands
+            let ota_write_char = ota_service.lock().create_characteristic(
+                BleUuid::from_uuid128_string(cfg.ota_write_uuid).unwrap(),
+                NimbleProperties::WRITE | NimbleProperties::WRITE_NO_RSP,
+            );
+            let ota_fw_bytes_cl2 = ota_fw_bytes.clone();
+            let ota_notify_char_cl = ota_notify_char_sub.clone();
+            ota_write_char.lock().on_write(move |args| {
+                let data = args.recv_data();
+                log::info!("OTA_CMD ({} bytes): {:02X?}", data.len(), data);
+                if data.len() >= 1 {
+                    match data[0] {
+                        0x01 => {
+                            log::info!("OTA: start update");
+                            // Notify progress
+                            let resp = vec![0x01u8, 0x00]; // status=1, progress=0
+                            ota_notify_char_cl.lock().set_value(&resp).notify();
+                        }
+                        0x02 => log::info!("OTA: check version"),
+                        0x03 => {
+                            let sz = ota_fw_bytes_cl2.lock().unwrap().len();
+                            log::info!("OTA: verify firmware ({} bytes)", sz);
+                        }
+                        0x04 => {
+                            log::info!("OTA: reboot");
+                        }
+                        _ => log::info!("OTA: unknown cmd 0x{:02X}", data[0]),
+                    }
+                }
+            });
+        }
 
         // Nordic DFU Service (for Android OtaBridge compatibility)
         let dfu_service = server.create_service(

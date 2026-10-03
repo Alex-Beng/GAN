@@ -217,10 +217,10 @@ const CFG_MOYU32: ProtoCfg = ProtoCfg {
     service_uuid: "0783b03e-7735-b5a0-1760-a305d2795cb0",
     cmd_uuid: "0783b03e-7735-b5a0-1760-a305d2795cb2",
     state_uuid: "0783b03e-7735-b5a0-1760-a305d2795cb1",
-    ota_service_uuid: "00000000-0000-0000-0000-000000000000",
+    ota_service_uuid: "02f00000-0000-0000-0000-00000000fe00",
     ota_version_uuid: "00000000-0000-0000-0000-000000000000",
-    ota_write_uuid: "00000000-0000-0000-0000-000000000000",
-    ota_notify_uuid: "00000000-0000-0000-0000-000000000000",
+    ota_write_uuid: "02f00000-0000-0000-0000-00000000ff01",
+    ota_notify_uuid: "02f00000-0000-0000-0000-00000000ff02",
     ota_data_uuid: "00000000-0000-0000-0000-000000000000",
     ota_version: C_OTA_VERSION,
     base_key: &C_KEY_MOYU32,
@@ -228,6 +228,13 @@ const CFG_MOYU32: ProtoCfg = ProtoCfg {
     mfr_cic: 0x0000, // unbound cube; bound cubes use account-derived CIC
     mfr_extra: C_MFR_EXTRA_MOYU32,
 };
+
+// WCU app compares this (161 software version) against the cloud firmware.json
+// (currently 2.12) to decide whether to offer an OTA upgrade.
+pub const MOYU32_SW_MAJOR: u8 = 2;
+pub const MOYU32_SW_MINOR: u8 = 12;
+// Firmware start address reported to the WCU OTA client ("GetStartAddress").
+pub const MOYU32_OTA_BASE: u32 = 0x0001_0000;
 
 const CFG_QIYI: ProtoCfg = ProtoCfg {
     proto: Protocol::QiYi,
