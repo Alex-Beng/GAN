@@ -64,6 +64,7 @@ const DEFAULT_DELAY_MS: u64 = 50;
 
 pub const MOVE_FACE_DELAY: u8 = 99;
 pub const MOVE_FACE_TIME: u8 = 100;
+pub const MOVE_FACE_DISCONNECT: u8 = 101;
 
 pub fn parse_move_notation(s: &str) -> Option<(u8, u8)> {
     let s = s.trim();
@@ -506,10 +507,14 @@ pub fn start_http_server(
     })?;
 
     let cs_ref3 = cube_state.clone();
+    let queue_reset = queue.clone();
     server.fn_handler("/api/reset", Method::Post, move |req| {
         let mut cs = cs_ref3.lock().unwrap();
         *cs = protocol::CubeState::solved();
         drop(cs);
+        // Ask the BLE loop to emit a MoYu32 160 (device-initiated disconnect)
+        // notification, mirroring a real cube resetting.
+        queue_reset.lock().unwrap().push_back((MOVE_FACE_DISCONNECT, 0));
         let _ = req.into_ok_response()?
             .write_all(b"reset");
         Ok::<(), anyhow::Error>(())

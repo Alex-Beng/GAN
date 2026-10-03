@@ -216,7 +216,8 @@ pub fn build_hardware_single(proto: Protocol) -> Vec<u8> {
             for b in b"GAN12UI" { w.write_bits(*b as u32, 8); }
             w.finish()
         }
-        Protocol::MoYu32 => build_hardware_moyu32(),
+        // MoYu32 is handled directly in ble.rs (needs the mutable device name).
+        Protocol::MoYu32 => Vec::new(),
         Protocol::QiYi => {
             let dummy_fb = vec![0u8; 54];
             let mac = crate::device_config::get_config(Protocol::QiYi).mac;
@@ -530,7 +531,8 @@ pub fn parse_command_type(proto: Protocol, data: &[u8]) -> IncomingCommand {
                 _ => IncomingCommand::Unknown,
             }
         }
-        Protocol::MoYu32 => parse_command_moyu32(data),
+        // MoYu32 uses its own decoder (parse_command_moyu32 -> MoYuCommand) in ble.rs.
+        Protocol::MoYu32 => IncomingCommand::Unknown,
         Protocol::QiYi => parse_command_qiyi(data),
         Protocol::Timer => IncomingCommand::Unknown,
         Protocol::Robot => IncomingCommand::Unknown,  // 使用 parse_robot_command
@@ -629,16 +631,93 @@ pub fn build_battery_moyu32(level: u8) -> Vec<u8> {
     w.finish()
 }
 
-pub fn build_hardware_moyu32() -> Vec<u8> {
-    // WCU info message: [161 (8b)][name 8 bytes ASCII][hw major/minor 8b+8b]
-    // [sw major/minor 8b+8b]
+pub fn build_hardware_moyu32(name: &str) -> Vec<u8> {
+    // WCU info message (matches CubeProcess5 opcode 161 bit layout):
+    // [161][name 8 bytes ASCII][hw major][hw minor][sw major][sw minor]
+    // [flag1..flag5 (1b each)][battery 8b][5b][9b][9b] == 160 bits == 20 bytes.
+    // Only the first bytes are meaningful to the app; the trailing fields are
+    // filled with sane defaults.
     let mut w = BitWriter::new(20);
     w.write_bits(161, 8);
-    for b in b"WCU_MY32" { w.write_bits(*b as u32, 8); }
+    let mut nbuf = [b' '; 8];
+    for (i, b) in name.bytes().take(8).enumerate() { nbuf[i] = b; }
+    for b in nbuf { w.write_bits(b as u32, 8); }
     w.write_bits(1, 8); // hw major
     w.write_bits(0, 8); // hw minor
     w.write_bits(2, 8); // sw major
     w.write_bits(0, 8); // sw minor
+    // 5 flags: isOutage, isGyroEnabled, isGyroCorrect, isMagWorking, isMagCalibrated
+    for _ in 0..5 { w.write_bits(0, 1); }
+    w.write_bits(80, 8); // battery level
+    w.write_bits(0, 5);
+    w.write_bits(0, 9);
+    w.write_bits(0, 9);
+    w.finish()
+}
+
+pub fn build_bind_account_moyu32(account: u32) -> Vec<u8> {
+    // [170][account 32b] == CubeSender5.RequestBindAccount / CubeProcess5 170.
+    let mut w = BitWriter::new(20);
+    w.write_bits(170, 8);
+    w.write_bits(account, 32);
+    w.finish()
+}
+
+pub fn build_gyro_operation_moyu32(reset_correction: bool, open: bool) -> Vec<u8> {
+    // [172][resetCorrection 8b][open 8b] == CubeSender5.RequestCubeGyroOperation.
+    let mut w = BitWriter::new(20);
+    w.write_bits(172, 8);
+    w.write_bits(if reset_correction { 1 } else { 0 }, 8);
+    w.write_bits(if open { 1 } else { 0 }, 8);
+    w.finish()
+}
+
+pub fn build_change_name_moyu32(name: &str) -> Vec<u8> {
+    // [173][len 8b][name bytes 8b each] == CubeSender5.RequestCubeChangeName.
+    let bytes = name.as_bytes();
+    let len = bytes.len().min(16);
+    let mut w = BitWriter::new(20);
+    w.write_bits(173, 8);
+    w.write_bits(len as u32, 8);
+    for b in &bytes[..len] { w.write_bits(*b as u32, 8); }
+    w.finish()
+}
+
+pub fn build_solving_moyu32(state: &[u8; 48], flag: bool) -> Vec<u8> {
+    // [174][48 x 3b facelets][1b flag] == CubeProcess5 174.
+    let mut w = BitWriter::new(20);
+    w.write_bits(174, 8);
+    for &s in state.iter() { w.write_bits(s as u32 & 0x7, 3); }
+    w.write_bits(if flag { 1 } else { 0 }, 1);
+    w.finish()
+}
+
+pub fn build_move_history_moyu32(serial: u8, moves: &[(u8, u8, u16)]) -> Vec<u8> {
+    // [168][6 x elapsed 16b][moveCnt 8b][5 x move code 5b] == CubeProcess5 168.
+    let mut w = BitWriter::new(20);
+    w.write_bits(168, 8);
+    let n = moves.len().min(5);
+    for i in 0..6 {
+        let elapsed = if i < n { moves[i].2 as u32 } else { 0 };
+        w.write_bits(elapsed, 16);
+    }
+    w.write_bits(serial as u32, 8);
+    for i in 0..5 {
+        if i < n {
+            let (face, dir, _) = moves[i];
+            let code = (URFDLB_TO_FBUDLR[face as usize] << 1) | dir as u32;
+            w.write_bits(code, 5);
+        } else {
+            w.write_bits(0b11111, 5);
+        }
+    }
+    w.finish()
+}
+
+pub fn build_disconnect_moyu32() -> Vec<u8> {
+    // [160] == CubeProcess5 160 -> CubeDisconnect.
+    let mut w = BitWriter::new(20);
+    w.write_bits(160, 8);
     w.finish()
 }
 
@@ -685,14 +764,122 @@ pub fn build_gyro_enable_moyu32() -> Vec<u8> {
     v
 }
 
-pub fn parse_command_moyu32(data: &[u8]) -> IncomingCommand {
-    match data.get(0) {
-        Some(161) => IncomingCommand::Hardware,
-        Some(163) => IncomingCommand::Facelets,
-        Some(164) => IncomingCommand::Battery,
-        Some(172) => IncomingCommand::Unknown,
-        _ => IncomingCommand::Unknown,
+/// Decoded MoYu32 (WCU) inbound command. Bit layout per the WCU app's
+/// CubeProcess5 / CubeSender5 (MSB-first, encrypted with the salted key).
+#[derive(Debug, Clone, Copy)]
+pub enum MoYuCommand {
+    Facelets,
+    Hardware,
+    Battery,
+    BindAccount(u32),
+    GyroOperation { reset_correction: bool, open: bool },
+    ChangeName { len: u8 },
+    Solving { flag: bool },
+    ResetState,
+    MoveHistory { step: u8 },
+    Disconnect,
+    Unknown,
+}
+
+/// Read `count` bits (MSB-first) starting at bit offset `start` from `data`.
+fn read_bits(data: &[u8], start: usize, count: usize) -> u32 {
+    let mut value = 0u32;
+    for i in 0..count {
+        let pos = start + i;
+        let byte_idx = pos / 8;
+        if byte_idx >= data.len() { break; }
+        let bit_idx = 7 - (pos % 8);
+        let bit = (data[byte_idx] >> bit_idx) & 1;
+        value = (value << 1) | bit as u32;
     }
+    value
+}
+
+pub fn parse_command_moyu32(data: &[u8]) -> MoYuCommand {
+    match data.get(0) {
+        Some(160) => MoYuCommand::Disconnect,
+        Some(161) => MoYuCommand::Hardware,
+        Some(162) => MoYuCommand::ResetState,
+        Some(163) => MoYuCommand::Facelets,
+        Some(164) => MoYuCommand::Battery,
+        Some(168) => MoYuCommand::MoveHistory { step: read_bits(data, 8, 8) as u8 },
+        Some(170) => MoYuCommand::BindAccount(read_bits(data, 8, 32)),
+        Some(172) => MoYuCommand::GyroOperation {
+            reset_correction: read_bits(data, 8, 8) == 1,
+            open: read_bits(data, 16, 8) == 1,
+        },
+        Some(173) => MoYuCommand::ChangeName { len: read_bits(data, 8, 8) as u8 },
+        Some(174) => MoYuCommand::Solving { flag: read_bits(data, 8 + 48 * 3, 1) == 1 },
+        _ => MoYuCommand::Unknown,
+    }
+}
+
+/// Extract the requested name bytes from a 173 ChangeName request.
+pub fn parse_change_name_moyu32(data: &[u8]) -> String {
+    let len = read_bits(data, 8, 8) as usize;
+    let mut s = String::new();
+    for i in 0..len.min(16) {
+        let c = read_bits(data, 16 + i * 8, 8) as u8;
+        if c != 0 { s.push(c as char); }
+    }
+    s
+}
+
+/// Extract the 48 requested facelets (3b each) from a 162 Reset request or a
+/// 174 Solving message.
+pub fn parse_state48_moyu32(data: &[u8], header_bits: usize) -> [u8; 48] {
+    let mut out = [0u8; 48];
+    for i in 0..48 { out[i] = read_bits(data, header_bits + i * 3, 3) as u8; }
+    out
+}
+
+/// Convert the WCU wire facelet array (48 stickers: 6 faces x 8, FBUDLR face
+/// order, centers omitted; color indices also FBUDLR) into a cubie CubeState.
+/// Inverse of `build_facelets_moyu32`.
+pub fn facelets48_to_state_moyu32(facelets: &[u8; 48]) -> CubeState {
+    let positions = [0usize, 1, 2, 3, 5, 6, 7, 8];
+    let mut f = [0u8; 54];
+    for i in 0..6 {
+        let b = URFDLB_TO_FBUDLR[i] as usize; // block index for our face i
+        f[i * 9 + 4] = i as u8; // center
+        for (p, &slot) in positions.iter().enumerate() {
+            let color_fbudlr = (facelets[b * 8 + p] & 0x7) as usize;
+            f[i * 9 + slot] = FBUDLR_TO_URFDLB[color_fbudlr] as u8;
+        }
+    }
+    decode_facelets(f)
+}
+
+/// WCU FBUDLR color/face index -> our URFDLB index.
+const FBUDLR_TO_URFDLB: [u32; 6] = [2, 5, 0, 3, 4, 1];
+
+/// Reverse of `to_facelet_string`: recover a CubeState from 54 sticker colors
+/// (URFDLB color indices, centers implicit by position).
+fn decode_facelets(f: [u8; 54]) -> CubeState {
+    let mut state = CubeState::solved();
+    for i in 0..8 {
+        'find: for j in 0..8 {
+            for ori in 0..3 {
+                let mut ok = true;
+                for k in 0..3 {
+                    if f[CORNER_FACELET[i][(k + ori) % 3]] != CORNER_COLOR[j][k] { ok = false; break; }
+                }
+                if ok { state.cp[i] = j as u8; state.co[i] = ori as u8; break 'find; }
+            }
+        }
+    }
+    for i in 0..12 {
+        'find: for j in 0..12 {
+            for ori in 0..2 {
+                let mut ok = true;
+                for k in 0..2 {
+                    if f[EDGE_FACELET[i][(k + ori) % 2]] != EDGE_COLOR[j][k] { ok = false; break; }
+                }
+                if ok { state.ep[i] = j as u8; state.eo[i] = ori as u8; break 'find; }
+            }
+        }
+    }
+    state
 }
 
 // ==================== QiYi ====================

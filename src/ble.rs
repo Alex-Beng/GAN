@@ -8,7 +8,7 @@ use esp32_nimble::{BLEDevice, NimbleProperties};
 
 use crate::crypto;
 use crate::device_config::{self, Protocol};
-use crate::http::{MOVE_FACE_DELAY, MOVE_FACE_TIME};
+use crate::http::{MOVE_FACE_DELAY, MOVE_FACE_DISCONNECT, MOVE_FACE_TIME};
 use crate::protocol;
 
 fn ble_encrypt(proto: Protocol, data: &mut Vec<u8>, key: &[u8; 16], iv: &[u8; 16]) {
@@ -25,6 +25,10 @@ pub async fn run(
     cube_state: Arc<Mutex<protocol::CubeState>>,
     move_delay_ms: Arc<Mutex<u64>>,
     active_proto: Arc<Mutex<Protocol>>,
+    account: Arc<Mutex<u32>>,
+    cube_name: Arc<Mutex<String>>,
+    gyro_open: Arc<Mutex<bool>>,
+    nvs: esp_idf_svc::nvs::EspDefaultNvsPartition,
 ) {
     loop {
         let proto = *active_proto.lock().unwrap();
@@ -43,9 +47,16 @@ pub async fn run(
         let key = Arc::new(key);
         let iv = Arc::new(iv);
 
+        // MoYu32 may have a user-assigned name; other protocols use the config name.
+        let adv_name: String = if proto == Protocol::MoYu32 {
+            cube_name.lock().unwrap().clone()
+        } else {
+            cfg.device_name.to_string()
+        };
+
         let ble_device = BLEDevice::take();
         ble_device.set_own_addr_type(OwnAddrType::Public);
-        BLEDevice::set_device_name(cfg.device_name).unwrap();
+        BLEDevice::set_device_name(&adv_name).unwrap();
 
         let server = ble_device.get_server();
 
@@ -56,6 +67,14 @@ pub async fn run(
         let connected = Arc::new(Mutex::new(false));
         let connected_conn = connected.clone();
         let connected_disc = connected.clone();
+        // Shared move history (newest first) used both by the move loop and by
+        // the MoYu32 opcode-168 (history) handler.
+        let move_history: Arc<Mutex<std::collections::VecDeque<(u8, u8, u16)>>> =
+            Arc::new(Mutex::new(std::collections::VecDeque::new()));
+        let move_history_cmd = move_history.clone();
+        // Set when a command (bind / name change) requires a BLE re-advertise.
+        let need_restart = Arc::new(Mutex::new(false));
+        let need_restart_cmd = need_restart.clone();
 
         server.on_connect(move |_server, _desc| {
             log::info!("Client connected");
@@ -199,10 +218,111 @@ pub async fn run(
         let cube_state_cl = cube_state.clone();
         let shared_serial_cl = shared_serial.clone();
         let proto_cl = proto;
+        let account_cl = account.clone();
+        let cube_name_cl = cube_name.clone();
+        let gyro_open_cl = gyro_open.clone();
+        let nvs_cl = nvs.clone();
 
         cmd_char.lock().on_write(move |args| {
             let data = args.recv_data();
             log::info!("CMD raw ({} bytes): {:02X?}", data.len(), data);
+
+            // MoYu32 (WCU) 协议: 加密, 命令/响应 + 状态
+            if proto_cl == Protocol::MoYu32 {
+                if data.len() < 20 {
+                    log::warn!("MoYu32 CMD too short, ignoring");
+                    return;
+                }
+                let mut buf = vec![0u8; 20];
+                buf.copy_from_slice(&data[..20]);
+                crate::crypto::moyu32_decrypt(&mut buf, &key_cl, &iv_cl);
+                let cmd = protocol::parse_command_moyu32(&buf);
+                log::info!("MoYu32 CMD: {:?}, decrypted: {:02X?}", cmd, &buf);
+                let mut state_char = state_char_cmd.lock();
+                match cmd {
+                    protocol::MoYuCommand::Facelets => {
+                        let cs = cube_state_cl.lock().unwrap();
+                        let serial = *shared_serial_cl.lock().unwrap();
+                        let mut msg = protocol::build_facelets_moyu32(serial, &cs);
+                        drop(cs);
+                        ble_encrypt(proto_cl, &mut msg, &key_cl, &iv_cl);
+                        state_char.set_value(&msg).notify();
+                    }
+                    protocol::MoYuCommand::Hardware => {
+                        let name = cube_name_cl.lock().unwrap().clone();
+                        let mut msg = protocol::build_hardware_moyu32(&name);
+                        ble_encrypt(proto_cl, &mut msg, &key_cl, &iv_cl);
+                        state_char.set_value(&msg).notify();
+                    }
+                    protocol::MoYuCommand::Battery => {
+                        let mut msg = protocol::build_battery_moyu32(80);
+                        ble_encrypt(proto_cl, &mut msg, &key_cl, &iv_cl);
+                        state_char.set_value(&msg).notify();
+                    }
+                    protocol::MoYuCommand::BindAccount(acct) => {
+                        log::info!("MoYu32 bind account: {}", acct);
+                        *account_cl.lock().unwrap() = acct;
+                        crate::save_moyu_account(&nvs_cl, acct);
+                        let mut msg = protocol::build_bind_account_moyu32(acct);
+                        ble_encrypt(proto_cl, &mut msg, &key_cl, &iv_cl);
+                        state_char.set_value(&msg).notify();
+                        *need_restart_cmd.lock().unwrap() = true;
+                    }
+                    protocol::MoYuCommand::GyroOperation { reset_correction, open } => {
+                        log::info!("MoYu32 gyro op: reset={} open={}", reset_correction, open);
+                        *gyro_open_cl.lock().unwrap() = open;
+                        crate::save_moyu_gyro(&nvs_cl, open);
+                        let mut msg = protocol::build_gyro_operation_moyu32(reset_correction, open);
+                        ble_encrypt(proto_cl, &mut msg, &key_cl, &iv_cl);
+                        state_char.set_value(&msg).notify();
+                    }
+                    protocol::MoYuCommand::ChangeName { len } => {
+                        let mut name = protocol::parse_change_name_moyu32(&buf);
+                        if name.len() > len as usize { name.truncate(len as usize); }
+                        log::info!("MoYu32 change name -> {:?}", name);
+                        if !name.is_empty() {
+                            *cube_name_cl.lock().unwrap() = name.clone();
+                            crate::save_moyu_name(&nvs_cl, &name);
+                        }
+                        let mut msg = protocol::build_change_name_moyu32(&name);
+                        ble_encrypt(proto_cl, &mut msg, &key_cl, &iv_cl);
+                        state_char.set_value(&msg).notify();
+                        *need_restart_cmd.lock().unwrap() = true;
+                    }
+                    protocol::MoYuCommand::Solving { flag: _ } => {
+                        let state = protocol::parse_state48_moyu32(&buf, 8);
+                        let mut msg = protocol::build_solving_moyu32(&state, true);
+                        ble_encrypt(proto_cl, &mut msg, &key_cl, &iv_cl);
+                        state_char.set_value(&msg).notify();
+                    }
+                    protocol::MoYuCommand::ResetState => {
+                        let state = protocol::parse_state48_moyu32(&buf, 8);
+                        let mut cs = cube_state_cl.lock().unwrap();
+                        *cs = protocol::facelets48_to_state_moyu32(&state);
+                        drop(cs);
+                    }
+                    protocol::MoYuCommand::MoveHistory { step } => {
+                        let hist = move_history_cmd.lock().unwrap();
+                        let moves: Vec<(u8, u8, u16)> = hist.iter().cloned().collect();
+                        drop(hist);
+                        log::info!("MoYu32 move history request step={}", step);
+                        let serial = *shared_serial_cl.lock().unwrap() as u8;
+                        let mut msg = protocol::build_move_history_moyu32(serial, &moves);
+                        ble_encrypt(proto_cl, &mut msg, &key_cl, &iv_cl);
+                        state_char.set_value(&msg).notify();
+                    }
+                    protocol::MoYuCommand::Disconnect => {
+                        log::info!("MoYu32 device-initiated disconnect");
+                        let mut msg = protocol::build_disconnect_moyu32();
+                        ble_encrypt(proto_cl, &mut msg, &key_cl, &iv_cl);
+                        state_char.set_value(&msg).notify();
+                    }
+                    protocol::MoYuCommand::Unknown => {
+                        log::warn!("MoYu32 CMD unhandled: {:02X?}", &buf);
+                    }
+                }
+                return;
+            }
 
             // Timer 协议: 无加密, CRC16, 命令/响应
             if proto_cl == Protocol::Timer {
@@ -392,10 +512,20 @@ pub async fn run(
             }
         });
 
+        // Manufacturer Specific Data layout (WCU):
+        //   [0..4)  account (big-endian) when bound, 0x00000000 when unbound
+        //   [4]    model/control flag (0x30 = CubeProtocol5); drives app discovery
+        //   [5..11) MAC, reversed (DeviceMacParser reads data[10..5])
         let mut mfr_payload = [0u8; 11];
-        mfr_payload[0] = (cfg.mfr_cic & 0xFF) as u8;
-        mfr_payload[1] = (cfg.mfr_cic >> 8) as u8;
-        mfr_payload[2..5].copy_from_slice(cfg.mfr_extra);
+        if proto == Protocol::MoYu32 {
+            let acct = *account.lock().unwrap();
+            mfr_payload[0..4].copy_from_slice(&acct.to_be_bytes());
+            mfr_payload[4] = cfg.mfr_extra[2];
+        } else {
+            mfr_payload[0] = (cfg.mfr_cic & 0xFF) as u8;
+            mfr_payload[1] = (cfg.mfr_cic >> 8) as u8;
+            mfr_payload[2..5].copy_from_slice(cfg.mfr_extra);
+        }
         for i in 0..6 {
             mfr_payload[5 + i] = cfg.mac[5 - i];
         }
@@ -407,7 +537,7 @@ pub async fn run(
         adv_data.add_service_uuid(BleUuid::from_uuid128_string(cfg.service_uuid).unwrap());
 
         // Scan response: Manufacturer Specific Data + Complete Local Name (<= 28 of 31).
-        let name_bytes = cfg.device_name.as_bytes();
+        let name_bytes = adv_name.as_bytes();
         let mut scan_resp_raw: Vec<u8> = Vec::new();
         scan_resp_raw.push(12);   // AD length: type + 11 bytes
         scan_resp_raw.push(0xFF); // Manufacturer Specific Data
@@ -424,18 +554,22 @@ pub async fn run(
             adv.start().unwrap();
         }
 
-        log::info!("BLE advertising as '{}' ({:?})", cfg.device_name, proto);
+        log::info!("BLE advertising as '{}' ({:?})", adv_name, proto);
 
         let state_char_loop = state_char.clone();
         let key_loop = key.clone();
         let iv_loop = iv.clone();
         let cube_state_loop = cube_state.clone();
         let connected_loop = connected.clone();
-        let mut move_history: std::collections::VecDeque<(u8, u8, u16)> = std::collections::VecDeque::new();
         let mut last_move_time = embassy_time::Instant::now();
         let cube_start = embassy_time::Instant::now();
 
         loop {
+            // A bind/name change requires re-advertising with the new identity.
+            if *need_restart.lock().unwrap() {
+                log::info!("Re-advertising after MoYu32 identity change");
+                break;
+            }
             // Robot/Timer 协议: 不发送转动通知, 仅命令/响应
             if proto == Protocol::Robot || proto == Protocol::Timer {
                 Timer::after(Duration::from_millis(500)).await;
@@ -462,6 +596,19 @@ pub async fn run(
                 let ms = dir as u64 * 10;
                 log::info!("BLE time sleep {}ms", ms);
                 Timer::after(Duration::from_millis(ms)).await;
+                continue;
+            }
+
+            if face == MOVE_FACE_DISCONNECT {
+                // MoYu32: emit a device-initiated disconnect (opcode 160).
+                if proto == Protocol::MoYu32 {
+                    let mut msg = protocol::build_disconnect_moyu32();
+                    ble_encrypt(proto, &mut msg, &key_loop, &iv_loop);
+                    if *connected_loop.lock().unwrap() {
+                        state_char_loop.lock().set_value(&msg).notify();
+                    }
+                }
+                log::info!("BLE disconnect notification sent");
                 continue;
             }
 
@@ -503,12 +650,12 @@ pub async fn run(
                 *s
             };
 
-            move_history.push_front((face, dir, elapsed));
-            if move_history.len() > 7 {
-                move_history.pop_back();
-            }
-
-            let history: Vec<(u8, u8, u16)> = move_history.iter().cloned().collect();
+            let history: Vec<(u8, u8, u16)> = {
+                let mut mh = move_history.lock().unwrap();
+                mh.push_front((face, dir, elapsed));
+                while mh.len() > 7 { mh.pop_back(); }
+                mh.iter().cloned().collect()
+            };
 
             let cube_time = embassy_time::Instant::now()
                 .duration_since(cube_start)

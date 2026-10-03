@@ -324,6 +324,99 @@ async def run(base, switch, ck):
         for mv in ["R", "U'", "F2", "L", "D'", "B2"]:
             await move_test(mv)
 
+        print("== 5. Control opcodes (170/172/173/174/168) ==")
+
+        def wbits(buf, bitpos, value, count):
+            for i in range(count):
+                bit = (value >> (count - 1 - i)) & 1
+                idx = bitpos + i
+                if bit:
+                    buf[idx // 8] |= 1 << (7 - (idx % 8))
+
+        async def send_plain(plain):
+            enc = wcu_encrypt(bytearray(plain), key, iv)
+            await client.write_gatt_char(CHR_WRITE_UUID, bytes(enc))
+
+        async def control_test(label, plain, want_type, timeout=3.0):
+            await drain_queue()
+            await send_plain(plain)
+            return await wait_notification(queue, want_type, key, iv, timeout=timeout)
+
+        # --- 170 bind account ---
+        acct = 0x12345678
+        req = bytearray(20)
+        req[0] = 170
+        wbits(req, 8, acct, 32)
+        plain = await control_test("bind", req, 170)
+        if ck.check(plain is not None, "170 bind reply"):
+            got_acct = int(bits_of(plain)[8:40], 2)
+            ck.check(got_acct == acct, "170 echoes account", hex(got_acct))
+
+        # Device re-advertises with the account in mfr data bytes[0..4); rescan.
+        await asyncio.sleep(6.0)
+        devs = await BleakScanner.discover(timeout=8.0, return_adv=True)
+        found = None
+        for _addr, (d2, a2) in devs.items():
+            if a2.local_name and a2.local_name.startswith("WCU_MY3"):
+                found = (d2, a2)
+                break
+        if ck.check(found is not None, "cube re-advertised after bind"):
+            _d2, a2 = found
+            mfr2 = a2.manufacturer_data or {}
+            _cic2, payload2 = next(iter(mfr2.items())) if mfr2 else (None, None)
+            if payload2:
+                adv_acct = int.from_bytes(bytes(payload2[0:4]), "big")
+                ck.check(adv_acct == acct, "adv account == bound account", hex(adv_acct))
+                ck.check(len(payload2) > 4 and payload2[4] == 0x30,
+                         "adv byte[4] still 0x30", hex(payload2[4]) if len(payload2) > 4 else "short")
+            # reconnect for the remaining tests
+            async with BleakClient(_d2.address) as client2:
+                ck.check(client2.is_connected, "reconnect after bind")
+                await client2.start_notify(CHR_READ_UUID, on_notify)
+                # rebind sender context to the new client
+                async def send_plain2(p):
+                    await client2.write_gatt_char(CHR_WRITE_UUID, bytes(wcu_encrypt(bytearray(p), key, iv)))
+                # --- 172 gyro op ---
+                req = bytearray(20)
+                req[0] = 172
+                req[1] = 1
+                req[2] = 1
+                await drain_queue()
+                await send_plain2(req)
+                plain = await wait_notification(queue, 172, key, iv)
+                if ck.check(plain is not None, "172 gyro op reply"):
+                    b = bits_of(plain)
+                    ck.check(int(b[8:16], 2) == 1 and int(b[16:24], 2) == 1,
+                             "172 echoes (reset=1,open=1)")
+                # --- 173 change name ---
+                req = bytearray(20)
+                req[0] = 173
+                nm = b"WCU_MY37_TEST"
+                req[1] = len(nm)
+                for i, ch in enumerate(nm):
+                    wbits(req, 16 + i * 8, ch, 8)
+                await drain_queue()
+                await send_plain2(req)
+                plain = await wait_notification(queue, 173, key, iv)
+                ck.check(plain is not None, "173 change name reply")
+                # --- 174 solving (echo state) ---
+                req = bytearray(20)
+                req[0] = 174
+                for i in range(48):
+                    wbits(req, 8 + i * 3, i % 6, 3)
+                await drain_queue()
+                await send_plain2(req)
+                plain = await wait_notification(queue, 174, key, iv)
+                ck.check(plain is not None, "174 solving reply")
+                # --- 168 move history ---
+                req = bytearray(20)
+                req[0] = 168
+                req[1] = 0
+                await drain_queue()
+                await send_plain2(req)
+                plain = await wait_notification(queue, 168, key, iv)
+                ck.check(plain is not None, "168 move history reply")
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
