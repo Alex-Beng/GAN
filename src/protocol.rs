@@ -202,7 +202,8 @@ pub fn build_hardware_single(proto: Protocol) -> Vec<u8> {
             w.write_bits(0x07, 8);
             w.write_bits(9, 8);
             w.write_bits(0, 8);
-            for b in b"GAN12" { w.write_bits(*b as u32, 8); }
+            // V2 `ble=7` model field is 5 bytes (GANicV2S -> "GANic").
+            for b in b"GANic" { w.write_bits(*b as u32, 8); }
             w.write_bits(1, 4);
             w.write_bits(0, 4);
             w.write_bits(1, 4);
@@ -232,41 +233,81 @@ pub fn build_hardware_single(proto: Protocol) -> Vec<u8> {
 pub fn build_hardware_multi(proto: Protocol) -> Vec<Vec<u8>> {
     let mut msgs = Vec::new();
 
-    // hardware name (0xFC)
+    // V3 info responses. Field layouts verified against the decrypted GAN SDK
+    // protocol definition (`GanSDK_ProtocolV3.json`, GAN SDK v3.18):
+    //   252 model          index:8 + model:8*11
+    //   253 version        index:8 + version:4*2
+    //   254 deviceVersion  index:8 + deviceVersion:16
+    //   250 productDate    index:8 + (16+8+8)
+    //   245 buildTime      index:8 + (16+8+8+8+8)
+    //   246 restartReason  index:8 + restartReason:16
+    //   255 macAddress     index:8 + macAddress:8*7
+    let model: &[u8] = match proto {
+        Protocol::Gen4 => b"GANi4",
+        Protocol::Gan251 => b"GAN251ui",
+        _ => b"UNKNOWN",
+    };
+
+    // hardware name (0xFC / 252), 11-byte model field, zero padded.
     let mut w = BitWriter::new(20);
     w.write_bits(0xFC, 8);
-    let name = match proto {
-        Protocol::Gen4 => b"GAN15UI\x00",
-        Protocol::Gan251 => b"GAN251UI",
-        _ => b"UNKNOWN\x00",
-    };
-    w.write_bits(name.len() as u32, 8);
-    for b in name { w.write_bits(*b as u32, 8); }
+    w.write_bits(1, 8);
+    for i in 0..11 {
+        w.write_bits(*model.get(i).unwrap_or(&0) as u32, 8);
+    }
     msgs.push(w.finish());
 
-    // hardware version (0xFE)
+    // hardware version (0xFE / 254), 16-bit deviceVersion.
     let mut w = BitWriter::new(20);
     w.write_bits(0xFE, 8);
     w.write_bits(2, 8);
-    w.write_bits(1, 4);
-    w.write_bits(0, 4);
+    w.write_bits(0x0100, 16);
     msgs.push(w.finish());
 
-    // software version (0xFD)
+    // software version (0xFD / 253), two 4-bit fields.
     let mut w = BitWriter::new(20);
     w.write_bits(0xFD, 8);
-    w.write_bits(2, 8);
+    w.write_bits(3, 8);
     w.write_bits(1, 4);
     w.write_bits(0, 4);
     msgs.push(w.finish());
 
-    // product date (0xFA)
+    // product date (0xFA / 250), year:16 month:8 day:8.
     let mut w = BitWriter::new(20);
     w.write_bits(0xFA, 8);
     w.write_bits(4, 8);
     w.write_bits(2024u32, 16);
     w.write_bits(6u32, 8);
     w.write_bits(1u32, 8);
+    msgs.push(w.finish());
+
+    // build time (0xF5 / 245), year:16 month:8 day:8 hour:8 minute:8.
+    let mut w = BitWriter::new(20);
+    w.write_bits(0xF5, 8);
+    w.write_bits(5, 8);
+    w.write_bits(2024u32, 16);
+    w.write_bits(6u32, 8);
+    w.write_bits(1u32, 8);
+    w.write_bits(12u32, 8);
+    w.write_bits(0u32, 8);
+    msgs.push(w.finish());
+
+    // restart reason (0xF6 / 246), 16-bit.
+    let mut w = BitWriter::new(20);
+    w.write_bits(0xF6, 8);
+    w.write_bits(6, 8);
+    w.write_bits(0u32, 16);
+    msgs.push(w.finish());
+
+    // mac address (0xFF / 255), reversed MAC + 1 reserved byte.
+    let mac = crate::device_config::get_config(proto).mac;
+    let mut w = BitWriter::new(20);
+    w.write_bits(0xFF, 8);
+    w.write_bits(7, 8);
+    for i in 0..6 {
+        w.write_bits(mac[5 - i] as u32, 8);
+    }
+    w.write_bits(0, 8);
     msgs.push(w.finish());
 
     msgs

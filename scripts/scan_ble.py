@@ -15,10 +15,10 @@ from bleak import BleakScanner
 
 # Exact matches for emulated cubes (emu) -- fallback to prefix match for real cubes.
 DEVICE_NAMES = {
-    "GANi3SB": "Gen2 (GANi3SB)",
-    "GAN12UI": "Gen3 (GAN12UI)",
-    "GAN15UI": "Gen4 (GAN15UI)",
-    "GAN251Ui_SB": "Gan251",
+    "GANi3SB": "Gen2 (V1/GANi3SB)",
+    "GANicV2S_EMU": "Gen3 (V2/GANicV2S)",
+    "GANi4_EMU": "Gen4 (V3/GANi4)",
+    "GAN251ui_EMU": "Gan251 (V3-2)",
     "WCU_MY32_EMU": "MoYu32 (WCU)",
     "QY-QYSC-A-EMU": "QiYi (Smart)",
 }

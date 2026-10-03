@@ -25,10 +25,10 @@ impl Protocol {
 
     pub fn label(&self) -> &'static str {
         match self {
-            Protocol::Gen2 => "Gen2 (GANi3SB)",
-            Protocol::Gen3 => "Gen3 (GAN12UI)",
-            Protocol::Gen4 => "Gen4 (GAN15UI)",
-            Protocol::Gan251 => "Gan251 (GAN251UI)",
+            Protocol::Gen2 => "Gen2 (V1/GANi3SB)",
+            Protocol::Gen3 => "Gen3 (V2/GANicV2S)",
+            Protocol::Gen4 => "Gen4 (V3/GANi4)",
+            Protocol::Gan251 => "Gan251 (V3-2/GAN251ui)",
             Protocol::MoYu32 => "MoYu (WCU)",
             Protocol::QiYi => "QiYi (Smart)",
             Protocol::Robot => "Robot (GAN Robot)",
@@ -147,7 +147,9 @@ const CFG_GEN2: ProtoCfg = ProtoCfg {
 
 const CFG_GEN3: ProtoCfg = ProtoCfg {
     proto: Protocol::Gen3,
-    device_name: "GAN12UI",
+    // V2 model name; CubeStation maps names by prefix (`ganicv2s_` -> ProtocolV2),
+    // so the advertised name must be a real V2 model (see `devicedata_cn`).
+    device_name: "GANicV2S_EMU",
     mac: &MAC_GEN3,
     service_uuid: "8653000a-43e6-47b7-9cb0-5fc21d4ae340",
     cmd_uuid: "8653000c-43e6-47b7-9cb0-5fc21d4ae340",
@@ -166,7 +168,9 @@ const CFG_GEN3: ProtoCfg = ProtoCfg {
 
 const CFG_GEN4: ProtoCfg = ProtoCfg {
     proto: Protocol::Gen4,
-    device_name: "GAN15UI",
+    // V3 model name; CubeStation maps `gani4_` -> ProtocolV3 (service 00000010-...).
+    // The previous "GAN15UI" is not a recognised V3 prefix and fell back to V1.
+    device_name: "GANi4_EMU",
     mac: &MAC_GEN4,
     service_uuid: "00000010-0000-fff7-fff6-fff5fff4fff0",
     cmd_uuid: "0000fff5-0000-1000-8000-00805f9b34fb",
@@ -185,7 +189,8 @@ const CFG_GEN4: ProtoCfg = ProtoCfg {
 
 const CFG_GAN251: ProtoCfg = ProtoCfg {
     proto: Protocol::Gan251,
-    device_name: "GAN251Ui_SB",
+    // V3-2 model; CubeStation maps `gan251ui_` -> ProtocolV3-2 (its own AES key).
+    device_name: "GAN251ui_EMU",
     mac: &MAC_GAN251,
     service_uuid: "00000010-0000-fff7-fff6-fff5fff4fff0",
     cmd_uuid: "0000fff5-0000-1000-8000-00805f9b34fb",

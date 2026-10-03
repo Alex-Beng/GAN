@@ -16,7 +16,9 @@
 
 ## Protocols Supported
 
-Gen2 (GANi3SB), Gen3 (GAN12UI), Gen4 (GAN15UI), Gan251, MoYu32 (WCU), QiYi (Smart). All config in `device_config.rs`. Protocol switches at runtime; stored in NVS.
+Gen2 (V1/GANi3SB), Gen3 (V2/GANicV2S), Gen4 (V3/GANi4), Gan251 (V3-2), MoYu32 (WCU), QiYi (Smart). All config in `device_config.rs`. Protocol switches at runtime; stored in NVS.
+
+GAN device names must match CubeStation's `devicedata` model table so the app selects the right protocol version (V1/V2/V3). See `docs/cubestation-app-reverse.md` and `docs/cubestation-devicedata.json`.
 
 ## Testing
 
