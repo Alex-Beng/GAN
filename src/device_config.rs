@@ -113,6 +113,9 @@ const C_IV_MOYU32: [u8; 16] = [
     85, 6, 127, 49, 126, 103, 33, 87,
 ];
 
+// QiYi AES-128-ECB key. App and csTimer share the SAME key: libapp.so's
+// `Utils.getEncrypter` array is stored as Dart smi words (value<<1), which decodes
+// exactly to these bytes (e.g. 174>>1=87=0x57). See docs/qiyi-app-reverse.md.
 const C_KEY_QIYI: [u8; 16] = [
     0x57, 0xB1, 0xF9, 0xAB, 0xCD, 0x5A, 0xE8, 0xA7,
     0x9C, 0xB9, 0x8C, 0xE7, 0x57, 0x8C, 0x51, 0x08,

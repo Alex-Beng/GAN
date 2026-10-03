@@ -43,7 +43,13 @@ pub async fn run(
             );
         }
 
-        let (key, iv) = crypto::derive_key_iv(cfg.mac, cfg.base_key, cfg.base_iv);
+        // QiYi uses a fixed AES-128-ECB key (no MAC salt); other protocols derive
+        // the key/IV from the MAC (cf. crypto::derive_key_iv).
+        let (key, iv) = if proto == Protocol::QiYi {
+            (*cfg.base_key, *cfg.base_iv)
+        } else {
+            crypto::derive_key_iv(cfg.mac, cfg.base_key, cfg.base_iv)
+        };
         let key = Arc::new(key);
         let iv = Arc::new(iv);
 
@@ -433,7 +439,8 @@ pub async fn run(
             }
 
             // 以下为魔方协议处理
-            let min_len = if proto_cl == Protocol::Gen3 { 16 } else { 20 };
+            // QiYi / Gen3 use 16-byte messages; others 20.
+            let min_len = if proto_cl == Protocol::Gen3 || proto_cl == Protocol::QiYi { 16 } else { 20 };
             if data.len() < min_len {
                 log::warn!("CMD too short, ignoring");
                 return;
@@ -521,13 +528,19 @@ pub async fn run(
             let acct = *account.lock().unwrap();
             mfr_payload[0..4].copy_from_slice(&acct.to_be_bytes());
             mfr_payload[4] = cfg.mfr_extra[2];
+            for i in 0..6 { mfr_payload[5 + i] = cfg.mac[5 - i]; }
+        } else if proto == Protocol::QiYi {
+            // Smart Player Pro / csTimer read the 6 MAC bytes immediately after the
+            // 2-byte Company ID (CIC 0x0504): payload = [cid][mac x6][extra x3].
+            mfr_payload[0] = (cfg.mfr_cic & 0xFF) as u8;
+            mfr_payload[1] = (cfg.mfr_cic >> 8) as u8;
+            for i in 0..6 { mfr_payload[2 + i] = cfg.mac[5 - i]; }
+            mfr_payload[8..11].copy_from_slice(cfg.mfr_extra);
         } else {
             mfr_payload[0] = (cfg.mfr_cic & 0xFF) as u8;
             mfr_payload[1] = (cfg.mfr_cic >> 8) as u8;
             mfr_payload[2..5].copy_from_slice(cfg.mfr_extra);
-        }
-        for i in 0..6 {
-            mfr_payload[5 + i] = cfg.mac[5 - i];
+            for i in 0..6 { mfr_payload[5 + i] = cfg.mac[5 - i]; }
         }
 
         // ADV: flags + 128-bit service UUID (clients filter on it) = 21 of 31 bytes.

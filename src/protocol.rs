@@ -965,54 +965,58 @@ pub fn pack_facelets_nibble(fb: &[u8]) -> Vec<u8> {
     out
 }
 
+#[allow(dead_code)]
 pub fn reverse_slice(data: &[u8]) -> Vec<u8> {
     let mut v = data.to_vec();
     v.reverse();
     v
 }
 
-pub fn build_full_qiyi(facelets: &[u8], serial: u16, battery: u8, mac: &[u8; 6]) -> Vec<u8> {
-    let mac_bytes = reverse_slice(mac);
-    let mut payload: Vec<u8> = vec![
-        0x02, 0x6b, 0x01, 0x00, 0x00, serial as u8, 0x22, 0x06,
-    ];
-    payload.extend_from_slice(&[0x00, 0x02, 0x08, 0x00]);
-    payload.extend_from_slice(&mac_bytes);
-    payload.extend_from_slice(facelets);
-    payload.push(battery.min(100));
-    payload
+pub fn build_full_qiyi(facelets: &[u8], serial: u16, battery: u8, _mac: &[u8; 6]) -> Vec<u8> {
+    // QiYi "hello"/state record, csTimer-compatible:
+    //   [0x02][ts:4 BE][facelets:27][battery][pad]  == 34 content bytes
+    // The App parses: role=data[2], ts=data[3..7], facelets=data[7..34], battery=data[34].
+    let mut content: Vec<u8> = Vec::with_capacity(34);
+    content.push(0x02);
+    content.extend_from_slice(&(serial as u32).to_be_bytes());
+    for i in 0..27 {
+        content.push(facelets.get(i).copied().unwrap_or(0));
+    }
+    content.push(battery.min(100));
+    content.push(0);
+    content
 }
 
 pub fn build_move_qiyi(serial: u16, history: &[(u8, u8, u16)]) -> Vec<u8> {
-    let mut payload = vec![0x03u8, 0x6b, 0x01, 0x00, serial as u8];
-    payload.extend_from_slice(&[0x22, 0x06, 0x00, 0x00, 0x00]);
-    let mut n = history.len().min(12);
-    payload.push(n as u8);
+    // State-change record (role 0x03), csTimer-compatible, 92 content bytes -> frame len 0x60.
+    //   [0x03][ts:4 BE][facelets:27(unused)][firstMove] ... history entries (ts:4 BE + mv)
+    let axis_map = [4u8, 1, 3, 0, 2, 5];
+    let encode = |face: u8, dir: u8| -> u8 { ((axis_map[(face as usize) & 0x7] << 1) | (dir & 1)) + 1 };
+
+    let mut c = vec![0u8; 92];
+    c[0] = 0x03;
+    c[1..5].copy_from_slice(&(serial as u32).to_be_bytes());
     if let Some(&(face, dir, _)) = history.first() {
-        let axis_map = [4u8, 1, 3, 0, 2, 5];
-        let axis = axis_map[face as usize];
-        let code = (axis << 1) | dir;
-        payload.push(code + 1);
-        payload.push(0x00);
-        payload.push(0x00);
-    } else {
-        payload.extend_from_slice(&[0u8; 3]);
+        c[32] = encode(face, dir);
     }
-    payload.push(0x04);
-    let mut ts: u32 = 0;
-    for &(_, _, elapsed) in history.iter() { ts = ts.wrapping_add(elapsed as u32); }
-    let ts_le = ts.to_le_bytes();
-    payload.extend_from_slice(&ts_le);
-    while n > 0 {
-        payload.extend_from_slice(&[0u8; 4]);
-        payload.push(0u8);
-        n -= 1;
+    // history entries: newest first at content[84], then 79, 74, ...
+    let mut off: i32 = 84;
+    let mut t: u32 = 0;
+    for &(face, dir, elapsed) in history.iter() {
+        if off < 34 { break; }
+        t = t.wrapping_add(elapsed as u32);
+        let o = off as usize;
+        c[o..o + 4].copy_from_slice(&t.to_be_bytes());
+        c[o + 4] = encode(face, dir);
+        off -= 5;
     }
-    payload
+    c
 }
 
 pub fn qiyi_frame(payload: &[u8]) -> Vec<u8> {
-    let len = payload.len() + 2;
+    // csTimer frame: [0xFE][len][content...][crc16 MODBUS lo][hi], zero-padded to 16.
+    // `len` is the WHOLE frame length (FE + len + content + crc) == content.len() + 4.
+    let len = payload.len() + 4;
     let mut framed = vec![0xFEu8, len as u8];
     framed.extend_from_slice(payload);
     let crc = crate::crypto::crc16_modbus(&framed);
@@ -1033,9 +1037,23 @@ pub fn build_gyro_qiyi(qw: f32, qx: f32, qy: f32, qz: f32) -> Vec<u8> {
 }
 
 pub fn parse_command_qiyi(data: &[u8]) -> IncomingCommand {
-    if data.len() < 2 { return IncomingCommand::Unknown; }
+    if data.is_empty() { return IncomingCommand::Unknown; }
     match data[0] {
-        0x02 => IncomingCommand::Facelets,
+        // Smart Player Pro bind handshake: `FC 2A <flag> <ts4> <userId> <mac6> <crc>`.
+        // Replying with the current cube state lets the App observe the device.
+        0xFC => IncomingCommand::Facelets,
+        // Standard QiYi frame: `FE <len> <role> <payload...> <crc16>`.
+        0xFE => {
+            if data.len() < 3 { return IncomingCommand::Unknown; }
+            match data[2] {
+                0x02 | 0x05 => IncomingCommand::Facelets, // 配对后首条 / 查询
+                0x03 => IncomingCommand::MoveHistory {
+                    start_serial: data.get(3).copied().unwrap_or(0),
+                    count: 0,
+                },
+                _ => IncomingCommand::Unknown,
+            }
+        }
         _ => IncomingCommand::Unknown,
     }
 }
