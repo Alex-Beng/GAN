@@ -87,6 +87,13 @@ const MAC_TIMER: [u8; 6] = [0xAB, 0x12, 0x34, 0x5F, 0xA4, 0xD1];
 
 const C_OTA_VERSION: &[u8; 16] = b"1.0.0\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
 const C_MFR_EXTRA: &[u8; 3] = &[0x00, 0x00, 0x00];
+// WCU app (com.yi.aicube) discovers cubes by matching the 5th byte of the
+// Manufacturer Specific Data against its ProtocolFlag table (BluetoothUtil.
+// CheckProtocolVersion => packetData[4]). 0x30 selects CubeProtocol5, whose
+// wire format (8-char name, 48x3b facelets, 5-move packets) matches this
+// emulator. 0x00 (empty) made the app return BluetoothProtocolVersion.None and
+// drop the device during scan.
+const C_MFR_EXTRA_MOYU32: &[u8; 3] = &[0x00, 0x00, 0x30];
 
 const C_KEY_GEN2: [u8; 16] = [
     0x01, 0x02, 0x42, 0x28, 0x31, 0x91, 0x16, 0x07,
@@ -211,7 +218,7 @@ const CFG_MOYU32: ProtoCfg = ProtoCfg {
     base_key: &C_KEY_MOYU32,
     base_iv: &C_IV_MOYU32,
     mfr_cic: 0x0000, // unbound cube; bound cubes use account-derived CIC
-    mfr_extra: C_MFR_EXTRA,
+    mfr_extra: C_MFR_EXTRA_MOYU32,
 };
 
 const CFG_QIYI: ProtoCfg = ProtoCfg {

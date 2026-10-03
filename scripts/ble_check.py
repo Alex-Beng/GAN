@@ -221,6 +221,12 @@ async def run(base, switch, ck):
     cic, payload = next(iter(mfr.items())) if mfr else (None, None)
     ck.check(cic == 0x0000, "manufacturer CIC == 0x0000", hex(cic) if cic is not None else "none")
     if payload:
+        # WCU app matches packetData[4] against its ProtocolFlag table
+        # (BluetoothUtil.CheckProtocolVersion). 0x30 selects CubeProtocol5,
+        # which is the wire format this emulator implements.
+        ck.check(len(payload) > 4 and payload[4] == 0x30,
+                 "mfr data byte[4] == 0x30 (CubeProtocol5 flag)",
+                 "got %s" % (hex(payload[4]) if len(payload) > 4 else "short"))
         mac_recv = list(payload[-6:])[::-1]
         ck.check(mac_recv == EXPECT_MAC, "mfr data last-6 reversed == MAC",
                  "got %s" % ":".join("%02X" % b for b in mac_recv))
