@@ -13,5 +13,8 @@ __pycache__
 !scripts/proto_test.py
 !scripts/cube_sim.py
 !scripts/ble_check.py
+!scripts/proxy.py
+!scripts/proxy/
+!scripts/requirements-proxy.txt
 .opencode
 /dump

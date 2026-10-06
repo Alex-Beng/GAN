@@ -30,6 +30,14 @@ GAN device names must match CubeStation's `devicedata` model table so the app se
 - Protocol regression over USB: `python scripts/proto_test.py` — builds, flashes via espflash, parses device IP from boot logs, runs per-protocol HTTP matrix (switch/reset/moves/scramble/invalid) and fails on panic/reboot markers in the serial log. Options: `--port COMx`, `--ip`, `--protocols gen2,moyu32`, `--quick`, `--skip-devices`. Expected values come from `scripts/cube_sim.py` (mirror of `protocol.rs` cube math — keep in sync).
 - MoYu32 BLE conformance: `python scripts/ble_check.py` — bleak-based; validates advertising identity (name/MAC/CIC/service UUID) and the WCU wire format (161/163/164/165, crypto) against the csTimer reference. Requires `pip install bleak pycryptodome`.
 
+## Multi-brand BLE proxy (PC-side)
+
+`python scripts/proxy.py` — PC 端 BLE Central 代理：连接实体智能魔方（GAN v2/v3/v4、魔域 WCU_MY3、奇艺 QY-QYSC），解析转动并批量 `POST /api/moves` 到固件（由固件按 Web UI 选定的目标协议重新编码广播）。取代原先 MOYU 的 `tools/gan_proxy.py`。架构参考 `huizhiLLL/DCTimer-BLE`（`SmartCubeProtocol` 接口 + 每品牌协议类 + 扫描/分发）。子包 `scripts/proxy/`：`protocol.py`（接口/事件）、`scanner.py`（扫描+名字初筛）、`ble_client.py`（连接+GATT 服务 UUID 复核选协议）、`crypto.py`（GAN/魔域 AES-ECB+IV+%255 派生、奇艺 ECB+CRC16）、`gan.py`/`moyu32.py`/`qiyi.py`（各品牌解析）、`http_client.py`、`logger.py`。
+
+- 用法：`python scripts/proxy.py --scan`（列设备）；`--source auto|gan|moyu32|qiyi --host <ESP_IP>`（转发）；`--csv`（CSV 落盘，**默认关闭**，写 `data/proxy/`）。
+- 品牌识别：扫描按设备名初筛，**连接后按 GATT 服务 UUID 权威复核**（区分 GAN v2/v3/v4 等同品牌多协议），特征 UUID 兜底。
+- 依赖：`pip install -r scripts/requirements-proxy.txt`（bleak/requests/pycryptodome）。
+
 ## Simulation & Debug
 
 - Wokwi sim: `wokwi.toml` + `diagram.json` — controlled via VSCode extension `wokwi.wokwi-vscode`
