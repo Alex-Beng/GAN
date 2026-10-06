@@ -363,7 +363,7 @@ def _gyro_event(x: float, y: float, z: float, w: float):
     return GyroEvent(x, y, z, w)
 
 
-# Kociemba 面片还原（移植 gan-cube-emu protocol.rs / MOYU ble_cube.py）
+# Kociemba 面片还原（移植 GAN protocol.rs / MOYU ble_cube.py）
 _CORNER_FACELET = [
     [8, 9, 20], [6, 18, 38], [0, 36, 47], [2, 45, 11],
     [29, 26, 15], [27, 44, 24], [33, 53, 42], [35, 17, 51],

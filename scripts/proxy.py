@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """智能魔方 BLE 代理：连接实体魔方（GAN / 魔域 / 奇艺），解析转动并通过 HTTP
-下发到 gan-cube-emu 固件（由固件按 Web UI 选择的目标协议广播）。
+下发到 GAN 固件（由固件按 Web UI 选择的目标协议广播）。
 
 架构参考 huizhiLLL/DCTimer-BLE：扫描按名字初筛 → 连接后按 GATT 服务 UUID 复核
 具体协议 → 各品牌协议类解析 → 统一 MoveEvent → POST /api/moves。
@@ -159,7 +159,7 @@ async def _do_scan(source: str, timeout: float) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="智能魔方 BLE 代理 (GAN/魔域/奇艺 → gan-cube-emu)")
+    parser = argparse.ArgumentParser(description="智能魔方 BLE 代理 (GAN/魔域/奇艺 → GAN)")
     parser.add_argument("--source", default="auto", choices=["auto", "gan", "moyu32", "qiyi"],
                         help="来源品牌；默认 auto 自动识别")
     parser.add_argument("--address", default=None, help="指定 BLE 地址，跳过扫描")

@@ -1,7 +1,7 @@
 """BLE 智能魔方代理子包。
 
 以 BLE Central 连接实体智能魔方（GAN / 魔域 / 奇艺），解析转动并统一转为
-`MoveEvent(face, dir)`，再经 HTTP `POST /api/moves` 下发到 gan-cube-emu 固件，
+`MoveEvent(face, dir)`，再经 HTTP `POST /api/moves` 下发到 GAN 固件，
 由固件按 Web UI 选择的目标协议重新编码广播。
 
 架构参考 huizhiLLL/DCTimer-BLE：

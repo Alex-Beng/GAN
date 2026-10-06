@@ -38,7 +38,7 @@ pub fn run_serial(
                 };
             esp_idf_svc::sys::usb_serial_jtag_driver_install(&mut cfg as *mut _);
         }
-        serial_write(b">>> GAN Cube Emu serial ready\n");
+        serial_write(b">>> GAN serial ready\n");
 
         let mut buf = [0u8; 256];
         let mut line: Vec<u8> = Vec::with_capacity(1024);

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Automated protocol test harness for gan-cube-emu (ESP32-C3 over USB).
+"""Automated protocol test harness for GAN (ESP32-C3 over USB).
 
 Pipeline:
   1. cargo build
@@ -154,7 +154,7 @@ def cargo_build():
     r = subprocess.run(["cargo", "build"], cwd=str(ROOT))
     if r.returncode != 0:
         sys.exit("FATAL: cargo build failed")
-    for name in ("gan-cube-emu", "gan-cube-emu.exe"):
+    for name in ("gan-emu", "gan-emu.exe"):
         p = TARGET_BIN_DIR / name
         if p.exists():
             return p

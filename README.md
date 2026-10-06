@@ -1,4 +1,4 @@
-# gan-cube-emu
+# GAN
 
 ESP32-C3 BLE 魔方式模拟器，模拟 GAN 智能魔方的通信协议，通过 HTTP API 控制转动。
 
@@ -32,7 +32,7 @@ cargo espflash flash --monitor --chip esp32c3
 
 ## 相关项目6
 
-- [MOYU](../MOYU) - 基于 gan-cube-emu 的自动上分项目
+- [MOYU](../MOYU) - 基于 GAN 的自动上分项目
 
 ## 串口日志调试
 

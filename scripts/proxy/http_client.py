@@ -1,4 +1,4 @@
-"""HTTP 下发客户端：把转动批量 POST 到 gan-cube-emu 的 /api/moves。
+"""HTTP 下发客户端：把转动批量 POST 到 GAN 的 /api/moves。
 
 对齐现有 `scripts/cube_cmd.py` 的 requests 用法。固件协议无关：只需 {face, dir}，
 由固件按当前目标协议重新编码。

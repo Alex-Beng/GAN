@@ -1,6 +1,6 @@
 """GAN / 魔域 同款 AES-128 加解密。
 
-参考 DCTimer-BLE `GanCubeCipher` / `Moyu32Cipher`（与 gan-cube-emu `crypto.rs`
+参考 DCTimer-BLE `GanCubeCipher` / `Moyu32Cipher`（与 GAN `crypto.rs`
 逐字节一致）：
 
     key[i] = (base[i] + mac[5-i]) % 255   (仅前 6 字节, MAC 逆序作盐)

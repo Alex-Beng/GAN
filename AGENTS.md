@@ -1,4 +1,4 @@
-# gan-cube-emu — Agent Guide
+# GAN — Agent Guide
 
 ## Build & Flash
 
