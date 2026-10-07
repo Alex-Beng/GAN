@@ -1,7 +1,6 @@
 mod ble;
 mod http;
 mod serial;
-mod wifi;
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -122,13 +121,13 @@ fn main() {
     let cube_state: Arc<Mutex<shared::protocol::CubeState>> = Arc::new(Mutex::new(shared::protocol::CubeState::solved()));
     let move_delay_ms: Arc<Mutex<u64>> = Arc::new(Mutex::new(http::load_move_delay(&nvs)));
 
-    let _wifi = wifi::start_wifi(peripherals.modem, sys_loop, nvs.clone()).unwrap();
+    let _wifi = shared::wifi::start_wifi(peripherals.modem, sys_loop, nvs.clone()).unwrap();
     let _server = http::start_http_server(
         queue.clone(), _wifi.clone(), nvs.clone(),
         cube_state.clone(), move_delay_ms.clone(), protocol.clone(),
     ).unwrap();
     serial::run_serial(queue.clone(), cube_state.clone());
-    wifi::sta_reconnect_loop(_wifi.clone(), nvs.clone());
+    shared::wifi::sta_reconnect_loop(_wifi.clone(), nvs.clone());
 
     esp_idf_svc::hal::task::block_on(ble::run(
         queue, cube_state, move_delay_ms, protocol, account, cube_name, gyro_open, nvs,
