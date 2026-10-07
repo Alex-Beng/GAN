@@ -11,7 +11,7 @@ use esp_idf_svc::wifi::{
     EspWifi,
 };
 
-use crate::device_config::{WIFI_AP_PASS, WIFI_AP_SSID};
+use shared::device_config::{WIFI_AP_PASS, WIFI_AP_SSID};
 
 pub type SharedWifi = Arc<Mutex<BlockingWifi<EspWifi<'static>>>>;
 

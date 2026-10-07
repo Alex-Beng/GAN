@@ -4,7 +4,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::http;
-use crate::protocol;
+use shared::protocol;
 
 fn serial_write(data: &[u8]) {
     let total = data.len();

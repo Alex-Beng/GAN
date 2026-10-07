@@ -1,0 +1,24 @@
+[package]
+name = "emu"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "gan-emu"
+path = "src/main.rs"
+harness = false
+
+[dependencies]
+log.workspace = true
+anyhow.workspace = true
+esp-idf-svc.workspace = true
+embassy-time.workspace = true
+esp32-nimble.workspace = true
+shared.workspace = true
+
+[build-dependencies]
+embuild.workspace = true
+
+[package.metadata.esp-idf-sys]
+esp_idf_sdkconfig_defaults = ["emu/sdkconfig.defaults"]

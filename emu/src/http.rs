@@ -6,8 +6,8 @@ use esp_idf_svc::http::Method;
 use esp_idf_svc::io::Write;
 use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs};
 
-use crate::device_config::Protocol;
-use crate::protocol;
+use shared::device_config::Protocol;
+use shared::protocol;
 use crate::wifi::{self, SharedWifi};
 
 struct CpuTemp {
@@ -620,7 +620,7 @@ pub fn start_http_server(
                     *proto_set.lock().unwrap() = p;
                     crate::save_protocol(&nvs_proto, p);
                     // Pre-set BT MAC for the upcoming BLE restart
-                    let cfg = crate::device_config::get_config(p);
+                    let cfg = shared::device_config::get_config(p);
                     unsafe {
                         esp_idf_svc::sys::esp_iface_mac_addr_set(
                             cfg.mac.as_ptr(),
@@ -640,7 +640,7 @@ pub fn start_http_server(
     let proto_gatt = protocol.clone();
     server.fn_handler("/api/gatt", Method::Get, move |req| {
         let p = *proto_gatt.lock().unwrap();
-        let cfg = crate::device_config::get_config(p);
+        let cfg = shared::device_config::get_config(p);
         let json = std::format!(
             r#"{{"protocol":"{:?}","device":"{}","mac":"{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}","services":["{}","{}"],"version":"{}"}}"#,
             p,

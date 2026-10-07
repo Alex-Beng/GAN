@@ -1329,3 +1329,92 @@ pub fn build_timer_info(info_type: u8) -> Vec<u8> {
     buf.push((crc >> 8) as u8);
     buf
 }
+
+// === GAN Gen2 (V1) incoming decoder (proxy / GATT client side) ===
+
+/// One decoded Gen2 move: `face` 0..5 = U R F D L B, `dir` 0=CW 1=CCW.
+#[derive(Debug, Clone, Copy)]
+pub struct Gen2Move {
+    pub face: u8,
+    pub dir: u8,
+    pub elapsed: u16,
+}
+
+/// Decoded GAN Gen2 (V1) message received from a physical cube.
+#[derive(Debug)]
+pub enum Gen2Message {
+    /// A MOVE event with up to 7 moves (newest first).
+    Move { serial: u8, moves: Vec<Gen2Move> },
+    /// A FACELETS snapshot: 54 facelet indices (0..5 = U R F D L B).
+    Facelets { serial: u8, facelets: [u8; 54] },
+    /// Battery level event.
+    Battery { serial: u8, level: u8 },
+    /// Gyroscope quaternion event (raw signed fixed-point values).
+    Gyro { qw: i16, qx: i16, qy: i16, qz: i16 },
+    /// Anything else (hardware/reset/unknown), with the raw decrypted bytes.
+    Other { kind: u8, raw: Vec<u8> },
+}
+
+/// Parse a decrypted 20-byte GAN Gen2 (V1) message (see gen2.md §3.3/§3.4).
+pub fn decode_gen2(data: &[u8]) -> Gen2Message {
+    let mut r = BitReader::new(data);
+    let kind = r.read_bits(4) as u8;
+    let serial = r.read_bits(8) as u8;
+    match kind {
+        0x01 => {
+            // GYRO: qw/qx/qy/qz each 16 bits (signed fixed-point).
+            let qw = r.read_bits(16) as u16 as i16;
+            let qx = r.read_bits(16) as u16 as i16;
+            let qy = r.read_bits(16) as u16 as i16;
+            let qz = r.read_bits(16) as u16 as i16;
+            Gen2Message::Gyro { qw, qx, qy, qz }
+        }
+        0x02 => {
+            let mut faces = [(0u8, 0u8); 7];
+            for slot in faces.iter_mut() {
+                let f = r.read_bits(4) as u8;
+                let d = r.read_bits(1) as u8;
+                *slot = (f, d);
+            }
+            let mut moves = Vec::new();
+            for &(f, d) in faces.iter() {
+                let elapsed = r.read_bits(16) as u16;
+                // Stop at padding: face 0 dir 0 with zero elapsed, or face >= 6.
+                if f >= 6 { break; }
+                moves.push(Gen2Move { face: f, dir: d, elapsed });
+            }
+            Gen2Message::Move { serial, moves }
+        }
+        0x04 => {
+            // 7 corners (3 bits) + 7 corner orientations (2 bits) + 11 edges (4
+            // bits) + 11 edge orientations (1 bit) + 6 unused bits, then 6-face
+            // colour map is fixed. Reconstruct the 54-facelet string.
+            let mut cp = [0u8; 8];
+            let mut co = [0u8; 8];
+            let mut ep = [0u8; 12];
+            let mut eo = [0u8; 12];
+            for i in 0..7 { cp[i] = r.read_bits(3) as u8; }
+            cp[7] = (28u32.wrapping_sub(cp[0..7].iter().map(|&x| x as u32).sum::<u32>()) & 0x7) as u8;
+            for i in 0..7 { co[i] = r.read_bits(2) as u8; }
+            co[7] = (0u32.wrapping_sub(co[0..7].iter().map(|&x| x as u32).sum::<u32>()) & 0x3) as u8;
+            for i in 0..11 { ep[i] = r.read_bits(4) as u8; }
+            ep[11] = (66u32.wrapping_sub(ep[0..11].iter().map(|&x| x as u32).sum::<u32>()) & 0xF) as u8;
+            for i in 0..11 { eo[i] = r.read_bits(1) as u8; }
+            eo[11] = (eo[0..11].iter().map(|&x| x as u32).sum::<u32>() & 0x1) as u8;
+            let state = CubeState { cp, co, ep, eo };
+            let facelets = to_facelet_string(&state);
+            let mut idx = [0u8; 54];
+            for i in 0..54 {
+                idx[i] = match facelets[i] {
+                    b'U' => 0, b'R' => 1, b'F' => 2, b'D' => 3, b'L' => 4, _ => 5,
+                };
+            }
+            Gen2Message::Facelets { serial, facelets: idx }
+        }
+        0x09 => {
+            let level = r.read_bits(8) as u8;
+            Gen2Message::Battery { serial, level }
+        }
+        _ => Gen2Message::Other { kind, raw: data.to_vec() },
+    }
+}

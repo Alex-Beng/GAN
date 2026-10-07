@@ -1,15 +1,12 @@
 mod ble;
-mod crypto;
-mod device_config;
 mod http;
-mod protocol;
 mod serial;
 mod wifi;
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use device_config::Protocol;
+use shared::device_config::Protocol;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs};
@@ -115,14 +112,14 @@ fn main() {
     let protocol: Arc<Mutex<Protocol>> = Arc::new(Mutex::new(load_protocol(&nvs)));
     log::info!("Loaded protocol: {:?}", *protocol.lock().unwrap());
 
-    let default_name = device_config::get_config(Protocol::MoYu32).device_name;
+    let default_name = shared::device_config::get_config(Protocol::MoYu32).device_name;
     let account: Arc<Mutex<u32>> = Arc::new(Mutex::new(load_moyu_account(&nvs)));
     let cube_name: Arc<Mutex<String>> = Arc::new(Mutex::new(load_moyu_name(&nvs, default_name)));
     let gyro_open: Arc<Mutex<bool>> = Arc::new(Mutex::new(load_moyu_gyro(&nvs)));
     log::info!("MoYu32 account: {}, name: {}", *account.lock().unwrap(), *cube_name.lock().unwrap());
 
     let queue: Arc<Mutex<VecDeque<(u8, u8)>>> = Arc::new(Mutex::new(VecDeque::new()));
-    let cube_state: Arc<Mutex<protocol::CubeState>> = Arc::new(Mutex::new(protocol::CubeState::solved()));
+    let cube_state: Arc<Mutex<shared::protocol::CubeState>> = Arc::new(Mutex::new(shared::protocol::CubeState::solved()));
     let move_delay_ms: Arc<Mutex<u64>> = Arc::new(Mutex::new(http::load_move_delay(&nvs)));
 
     let _wifi = wifi::start_wifi(peripherals.modem, sys_loop, nvs.clone()).unwrap();

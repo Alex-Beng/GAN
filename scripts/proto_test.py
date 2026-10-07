@@ -150,8 +150,8 @@ def detect_port():
 
 
 def cargo_build():
-    print("== cargo build ==")
-    r = subprocess.run(["cargo", "build"], cwd=str(ROOT))
+    print("== cargo build ==  (emu crate, from emu/ for its sdkconfig)")
+    r = subprocess.run(["cargo", "build", "-p", "emu"], cwd=str(ROOT / "emu"))
     if r.returncode != 0:
         sys.exit("FATAL: cargo build failed")
     for name in ("gan-emu", "gan-emu.exe"):

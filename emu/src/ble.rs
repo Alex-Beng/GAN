@@ -6,17 +6,17 @@ use esp32_nimble::enums::{ConnMode, OwnAddrType};
 use esp32_nimble::utilities::BleUuid;
 use esp32_nimble::{BLEDevice, NimbleProperties};
 
-use crate::crypto;
-use crate::device_config::{self, Protocol};
+use shared::crypto;
+use shared::device_config::{self, Protocol};
 use crate::http::{MOVE_FACE_DELAY, MOVE_FACE_DISCONNECT, MOVE_FACE_TIME};
-use crate::protocol;
+use shared::protocol;
 
 fn ble_encrypt(proto: Protocol, data: &mut Vec<u8>, key: &[u8; 16], iv: &[u8; 16]) {
     match proto {
-        Protocol::MoYu32 => crate::crypto::moyu32_encrypt(data, key, iv),
-        Protocol::QiYi => crate::crypto::aes_ecb_encrypt(data, key),
+        Protocol::MoYu32 => crypto::moyu32_encrypt(data, key, iv),
+        Protocol::QiYi => crypto::aes_ecb_encrypt(data, key),
         Protocol::Robot | Protocol::Timer => {},  // 无加密
-        _ => crate::crypto::encrypt_msg(data, key, iv),
+        _ => crypto::encrypt_msg(data, key, iv),
     }
 }
 
@@ -118,12 +118,12 @@ pub async fn run(
                 let mut notify = ota_notify_cl.lock();
                 match req {
                     protocol::OtaRequest::StartAddress => {
-                        let msg = protocol::build_ota_reply(1, &crate::device_config::MOYU32_OTA_BASE.to_le_bytes());
+                        let msg = protocol::build_ota_reply(1, &device_config::MOYU32_OTA_BASE.to_le_bytes());
                         notify.set_value(&msg).notify();
                     }
                     protocol::OtaRequest::Version => {
-                        let ver = (crate::device_config::MOYU32_SW_MAJOR as u32) * 1000
-                            + crate::device_config::MOYU32_SW_MINOR as u32;
+                        let ver = (device_config::MOYU32_SW_MAJOR as u32) * 1000
+                            + device_config::MOYU32_SW_MINOR as u32;
                         let msg = protocol::build_ota_reply(2, &ver.to_le_bytes());
                         notify.set_value(&msg).notify();
                     }
@@ -296,7 +296,7 @@ pub async fn run(
                 }
                 let mut buf = vec![0u8; 20];
                 buf.copy_from_slice(&data[..20]);
-                crate::crypto::moyu32_decrypt(&mut buf, &key_cl, &iv_cl);
+                crypto::moyu32_decrypt(&mut buf, &key_cl, &iv_cl);
                 let cmd = protocol::parse_command_moyu32(&buf);
                 log::info!("MoYu32 CMD: {:?}, decrypted: {:02X?}", cmd, &buf);
                 let mut state_char = state_char_cmd.lock();
@@ -415,7 +415,7 @@ pub async fn run(
                     }
                     protocol::TimerCommand::QueryBattery => {
                         let mut buf = vec![0x07u8, 64, 1, 80];
-                        let crc = crate::crypto::crc16_ccitt_false(&buf);
+                        let crc = crypto::crc16_ccitt_false(&buf);
                         buf.push((crc & 0xFF) as u8);
                         buf.push((crc >> 8) as u8);
                         state_char.set_value(&buf).notify();
@@ -503,9 +503,9 @@ pub async fn run(
             let mut buf = vec![0u8; min_len];
             buf.copy_from_slice(&data[..min_len]);
             match proto_cl {
-                Protocol::MoYu32 => crate::crypto::moyu32_decrypt(&mut buf, &key_cl, &iv_cl),
-                Protocol::QiYi => crate::crypto::aes_ecb_decrypt(&mut buf, &key_cl),
-                _ => crate::crypto::decrypt_msg(&mut buf, &key_cl, &iv_cl),
+                Protocol::MoYu32 => crypto::moyu32_decrypt(&mut buf, &key_cl, &iv_cl),
+                Protocol::QiYi => crypto::aes_ecb_decrypt(&mut buf, &key_cl),
+                _ => crypto::decrypt_msg(&mut buf, &key_cl, &iv_cl),
             }
 
             let cmd = protocol::parse_command_type(proto_cl, &buf);

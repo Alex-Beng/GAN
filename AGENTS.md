@@ -2,17 +2,31 @@
 
 ## Build & Flash
 
-- Build: `cargo build` (uses `.cargo/config.toml` — target `riscv32imc-esp-espidf`, linker `ldproxy`, `build-std`)
-- Flash + monitor: `cargo espflash flash --monitor --chip esp32c3`
-- Runner already configured in `.cargo/config.toml` as `espflash flash --monitor`, so no extra flag needed after build.
-- Requires nightly Rust (`rust-toolchain.toml`), `espflash` installed, and ESP-IDF v5.5.3 at `D:\esp` (set via `ESP_IDF_TOOLS_INSTALL_DIR`).
+This repo is a **Cargo workspace** with three crates:
+
+- `emu/` — GATT server firmware (`gan-emu` bin), the original emulator
+- `proxy/` — GATT client firmware (`gan-proxy` bin), connects physical cubes
+- `shared/` — lib crate shared by both (`crypto`, `protocol`, `device_config`)
+
+**Per-crate sdkconfig**: `emu` and `proxy` need different BLE roles, and
+`esp-idf-sys` is built once per invocation. The sdkconfig is selected via
+per-crate `.cargo/config.toml` env vars (`ESP_IDF_SYS_ROOT_CRATE`,
+`ESP_IDF_SDKCONFIG_DEFAULTS`) — so **build from inside the crate directory**:
+
+- Build emu: `cd emu && cargo build -p emu`
+- Build proxy: `cd proxy && cargo build -p proxy`
+- Flash + monitor: `cd emu && cargo run -p emu` (or `espflash flash --monitor ... target/riscv32imc-esp-espidf/debug/gan-emu`)
+- Requires nightly Rust (`rust-toolchain.toml`), `espflash` installed, and ESP-IDF v5.5.3 at `D:\esp` (set via `ESP_IDF_TOOLS_INSTALL_DIR` in root `.cargo/config.toml`).
+- Building with plain `cargo build` from the workspace root does **not** select a sdkconfig — always build from the crate dir or with the env vars set.
 
 ## Project Structure
 
-- Single binary crate (`harness = false` — **no Rust tests**)
-- Entrypoint: `src/main.rs` — wires BLE, HTTP, WiFi, serial in parallel
-- Modules: `ble.rs` (BLE peripheral, encrypt/notify), `http.rs` (ESP HTTP server + web UI), `wifi.rs` (STA/AP), `serial.rs` (USB JTAG console), `protocol.rs` (bit-packed message encoding for 6 cube protocols), `crypto.rs` (AES-CBC/ECB via ESP-IDF hw), `device_config.rs` (MACs, keys, BLE UUIDs per protocol)
-- Web UI: `src/index.html` (embedded at compile time)
+- Workspace root: `Cargo.toml` (`[workspace] members = ["shared","emu","proxy"]`)
+- `emu/src/main.rs` — wires BLE, HTTP, WiFi, serial in parallel
+- `emu/src/`: `ble.rs` (BLE peripheral, encrypt/notify), `http.rs` (ESP HTTP server + web UI), `wifi.rs` (STA/AP), `serial.rs` (USB JTAG console), `index.html` (embedded)
+- `shared/src/`: `protocol.rs` (bit-packed message encoding for 6 cube protocols), `crypto.rs` (AES-CBC/ECB via ESP-IDF hw), `device_config.rs` (MACs, keys, BLE UUIDs per protocol)
+- `proxy/src/main.rs` — BLE Central PoC: scan physical cube, connect, enumerate GATT, log raw notify bytes
+- No Rust tests (`harness = false`)
 
 ## Protocols Supported
 
