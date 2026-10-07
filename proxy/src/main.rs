@@ -1,23 +1,32 @@
-//! proxy firmware: self-contained ESP32-C3 GAN cube gateway.
+//! proxy firmware: self-contained ESP32-C3 cube gateway.
 //!
-//! Dual BLE role in one firmware:
+//! Dual BLE role + WiFi configuration in one firmware:
 //!   - **Central**: scan + connect a physical cube (GAN Gen2/Gen3/Gen4, MoYu
 //!     WCU/MHC, QiYi), establish link encryption, subscribe and decode its
 //!     notifications into protocol-agnostic [`CubeEvent`]s.
-//!   - **Peripheral**: advertise as a virtual GAN cube and serve the decoded
-//!     moves to a phone app.
+//!   - **Peripheral**: advertise as a virtual cube of the configured output
+//!     protocol and serve the decoded moves to a phone app.
+//!   - **WiFi + HTTP**: shared config UI (AP/STA + `/api/protocol`). Changing
+//!     the output protocol persists to NVS and reboots.
 //!
 //! Build from this directory (its .cargo/config.toml selects the proxy sdkconfig):
 //!   cd proxy && cargo build
 
 mod central;
+mod config;
 mod server;
 
+use std::sync::{Arc, Mutex};
+
+use esp_idf_svc::eventloop::EspSystemEventLoop;
+use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::log::EspLogger;
+use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp32_nimble::BLEDevice;
 
-use shared::device_config::{self, Protocol};
-use shared::protocol::CubeEvent;
+use shared::config_http::{self, ConfigHttpDeps};
+use shared::device_config::Protocol;
+use shared::protocol::{CubeEvent, CubeState};
 
 use crate::central::{find_cube, subscribe_and_decode, EventSink, InputProto};
 use crate::server::VirtualCube;
@@ -25,13 +34,67 @@ use crate::server::VirtualCube;
 fn main() {
     esp_idf_svc::sys::link_patches();
     EspLogger::initialize_default();
-    log::info!("=== gan-proxy: self-contained cube gateway (Central + Peripheral) ===");
 
-    esp_idf_svc::hal::task::block_on(async {
+    // Dynamic frequency scaling (like emu).
+    unsafe {
+        esp_idf_svc::sys::esp_pm_configure(
+            &esp_idf_svc::sys::esp_pm_config_t {
+                max_freq_mhz: 160,
+                min_freq_mhz: 40,
+                light_sleep_enable: false,
+            } as *const _ as *mut _,
+        );
+    }
+
+    let peripherals = Peripherals::take().unwrap();
+    let sys_loop = EspSystemEventLoop::take().unwrap();
+    let nvs = EspDefaultNvsPartition::take().unwrap();
+
+    // Configured output protocol (reboot-selected via /api/protocol).
+    let output_proto: Arc<Mutex<Protocol>> =
+        Arc::new(Mutex::new(config::load_output_protocol(&nvs)));
+    let out = *output_proto.lock().unwrap();
+    log::info!("=== gan-proxy gateway === output protocol: {:?}", out);
+
+    // WiFi (AP/STA) + shared HTTP config server.
+    let wifi = shared::wifi::start_wifi(peripherals.modem, sys_loop, nvs.clone()).unwrap();
+    shared::wifi::sta_reconnect_loop(wifi.clone(), nvs.clone());
+
+    let cube_state: Arc<Mutex<CubeState>> = Arc::new(Mutex::new(CubeState::solved()));
+    let nvs_switch = nvs.clone();
+    let on_change: Box<dyn Fn(Protocol) + Send + Sync> = Box::new(move |p| {
+        log::info!("output protocol -> {:?}, persisting and restarting", p);
+        config::save_output_protocol(&nvs_switch, p);
+        // Give the HTTP response a moment to flush, then reboot into the new
+        // protocol (same approach as emu: rebuild the BLE session on restart).
+        std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            unsafe { esp_idf_svc::sys::esp_restart() };
+        });
+    });
+    let _server = config_http::start(ConfigHttpDeps {
+        wifi: wifi.clone(),
+        nvs: nvs.clone(),
+        cube_state: cube_state.clone(),
+        protocol: output_proto.clone(),
+        on_protocol_change: Some(on_change),
+    })
+    .unwrap();
+
+    esp_idf_svc::hal::task::block_on(async move {
         let ble_device = BLEDevice::take();
 
-        // Peripheral first: advertise the virtual cube so a phone can connect.
-        let vcube = VirtualCube::setup(ble_device, *device_config::get_config(Protocol::Gen2).mac);
+        // Peripheral: advertise the virtual cube in the configured protocol.
+        let mac = *shared::device_config::get_config(out).mac;
+        // Set the BT MAC to the protocol's advertised MAC (real GAN cubes are
+        // identified by it; matches emu behaviour).
+        unsafe {
+            esp_idf_svc::sys::esp_iface_mac_addr_set(
+                mac.as_ptr(),
+                esp_idf_svc::sys::esp_mac_type_t_ESP_MAC_BT,
+            );
+        }
+        let vcube = VirtualCube::setup(ble_device, out, mac);
         let vcube_sink = vcube.clone();
 
         // Central: find, connect and identify the physical cube.
@@ -44,7 +107,6 @@ fn main() {
         }
         log::info!("Connected to {addr}");
 
-        // Identify the input protocol by GATT service UUID (authoritative).
         let proto: InputProto = match central::detect_protocol(&mut client).await {
             Some(p) => p,
             None => {
@@ -54,21 +116,19 @@ fn main() {
         };
         log::info!("Detected input protocol: {}", proto.label());
 
-        // GAN/MoYu cubes require link encryption before characteristic access.
         if !matches!(proto, InputProto::MoyuMhc) {
             if let Err(e) = client.secure_connection().await {
                 log::warn!("secure_connection failed: {e:?} (continuing)");
             }
         }
 
-        // MAC in display order (used for key derivation by the central module).
-        let mac = addr.as_be_bytes();
+        let mac_in = addr.as_be_bytes();
 
-        // Forward every decoded event to the virtual cube.
         let sink: EventSink = Box::new(move |ev: CubeEvent| {
             let names = ["U", "R", "F", "D", "L", "B"];
             match ev {
                 CubeEvent::Move { serial, moves } => {
+                    // Re-emit the newest move only.
                     if let Some(m0) = moves.first() {
                         if m0.face < 6 {
                             log::info!(
@@ -95,7 +155,7 @@ fn main() {
             }
         });
 
-        if let Err(e) = subscribe_and_decode(&mut client, proto, mac, sink).await {
+        if let Err(e) = subscribe_and_decode(&mut client, proto, mac_in, sink).await {
             log::error!("subscribe/decode failed: {e}");
             return;
         }
