@@ -1332,19 +1332,23 @@ pub fn build_timer_info(info_type: u8) -> Vec<u8> {
 
 // === GAN Gen2 (V1) incoming decoder (proxy / GATT client side) ===
 
-/// One decoded Gen2 move: `face` 0..5 = U R F D L B, `dir` 0=CW 1=CCW.
-#[derive(Debug, Clone, Copy)]
-pub struct Gen2Move {
+/// One decoded move from any physical cube: `face` 0..5 = U R F D L B,
+/// `dir` 0=CW 1=CCW. `elapsed` is the cube-reported interval in ms (0 if N/A).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CubeMove {
     pub face: u8,
     pub dir: u8,
     pub elapsed: u16,
 }
 
-/// Decoded GAN Gen2 (V1) message received from a physical cube.
+/// Protocol-agnostic event decoded from a physical cube's notification stream.
+///
+/// All input protocols (GAN Gen2/Gen3/Gen4, MoYu MHC/WCU, QiYi) decode into
+/// this single type so the gateway's forwarding logic is protocol-independent.
 #[derive(Debug)]
-pub enum Gen2Message {
-    /// A MOVE event with up to 7 moves (newest first).
-    Move { serial: u8, moves: Vec<Gen2Move> },
+pub enum CubeEvent {
+    /// A MOVE event with up to N moves (newest first).
+    Move { serial: u8, moves: Vec<CubeMove> },
     /// A FACELETS snapshot: 54 facelet indices (0..5 = U R F D L B).
     Facelets { serial: u8, facelets: [u8; 54] },
     /// Battery level event.
@@ -1355,8 +1359,37 @@ pub enum Gen2Message {
     Other { kind: u8, raw: Vec<u8> },
 }
 
+/// Decode a 54-char URFDLB facelet string into 0..5 facelet indices.
+fn facelets_to_indices(facelets: &[u8; 54]) -> [u8; 54] {
+    let mut idx = [0u8; 54];
+    for i in 0..54 {
+        idx[i] = match facelets[i] {
+            b'U' => 0, b'R' => 1, b'F' => 2, b'D' => 3, b'L' => 4, _ => 5,
+        };
+    }
+    idx
+}
+
+/// Reconstruct a `CubeState` from 7 corner perms (3b each), 7 corner orients
+/// (2b), 11 edge perms (4b), 11 edge orients (1b), computing the 8th/12th.
+fn read_cube_state(r: &mut BitReader) -> CubeState {
+    let mut cp = [0u8; 8];
+    let mut co = [0u8; 8];
+    let mut ep = [0u8; 12];
+    let mut eo = [0u8; 12];
+    for i in 0..7 { cp[i] = r.read_bits(3) as u8; }
+    cp[7] = (28u32.wrapping_sub(cp[0..7].iter().map(|&x| x as u32).sum::<u32>()) & 0x7) as u8;
+    for i in 0..7 { co[i] = r.read_bits(2) as u8; }
+    co[7] = (0u32.wrapping_sub(co[0..7].iter().map(|&x| x as u32).sum::<u32>()) & 0x3) as u8;
+    for i in 0..11 { ep[i] = r.read_bits(4) as u8; }
+    ep[11] = (66u32.wrapping_sub(ep[0..11].iter().map(|&x| x as u32).sum::<u32>()) & 0xF) as u8;
+    for i in 0..11 { eo[i] = r.read_bits(1) as u8; }
+    eo[11] = (eo[0..11].iter().map(|&x| x as u32).sum::<u32>() & 0x1) as u8;
+    CubeState { cp, co, ep, eo }
+}
+
 /// Parse a decrypted 20-byte GAN Gen2 (V1) message (see gen2.md §3.3/§3.4).
-pub fn decode_gen2(data: &[u8]) -> Gen2Message {
+pub fn decode_gen2(data: &[u8]) -> CubeEvent {
     let mut r = BitReader::new(data);
     let kind = r.read_bits(4) as u8;
     let serial = r.read_bits(8) as u8;
@@ -1367,7 +1400,7 @@ pub fn decode_gen2(data: &[u8]) -> Gen2Message {
             let qx = r.read_bits(16) as u16 as i16;
             let qy = r.read_bits(16) as u16 as i16;
             let qz = r.read_bits(16) as u16 as i16;
-            Gen2Message::Gyro { qw, qx, qy, qz }
+            CubeEvent::Gyro { qw, qx, qy, qz }
         }
         0x02 => {
             let mut faces = [(0u8, 0u8); 7];
@@ -1381,40 +1414,330 @@ pub fn decode_gen2(data: &[u8]) -> Gen2Message {
                 let elapsed = r.read_bits(16) as u16;
                 // Stop at padding: face 0 dir 0 with zero elapsed, or face >= 6.
                 if f >= 6 { break; }
-                moves.push(Gen2Move { face: f, dir: d, elapsed });
+                moves.push(CubeMove { face: f, dir: d, elapsed });
             }
-            Gen2Message::Move { serial, moves }
+            CubeEvent::Move { serial, moves }
         }
         0x04 => {
-            // 7 corners (3 bits) + 7 corner orientations (2 bits) + 11 edges (4
-            // bits) + 11 edge orientations (1 bit) + 6 unused bits, then 6-face
-            // colour map is fixed. Reconstruct the 54-facelet string.
-            let mut cp = [0u8; 8];
-            let mut co = [0u8; 8];
-            let mut ep = [0u8; 12];
-            let mut eo = [0u8; 12];
-            for i in 0..7 { cp[i] = r.read_bits(3) as u8; }
-            cp[7] = (28u32.wrapping_sub(cp[0..7].iter().map(|&x| x as u32).sum::<u32>()) & 0x7) as u8;
-            for i in 0..7 { co[i] = r.read_bits(2) as u8; }
-            co[7] = (0u32.wrapping_sub(co[0..7].iter().map(|&x| x as u32).sum::<u32>()) & 0x3) as u8;
-            for i in 0..11 { ep[i] = r.read_bits(4) as u8; }
-            ep[11] = (66u32.wrapping_sub(ep[0..11].iter().map(|&x| x as u32).sum::<u32>()) & 0xF) as u8;
-            for i in 0..11 { eo[i] = r.read_bits(1) as u8; }
-            eo[11] = (eo[0..11].iter().map(|&x| x as u32).sum::<u32>() & 0x1) as u8;
-            let state = CubeState { cp, co, ep, eo };
+            let state = read_cube_state(&mut r);
             let facelets = to_facelet_string(&state);
-            let mut idx = [0u8; 54];
-            for i in 0..54 {
-                idx[i] = match facelets[i] {
-                    b'U' => 0, b'R' => 1, b'F' => 2, b'D' => 3, b'L' => 4, _ => 5,
-                };
-            }
-            Gen2Message::Facelets { serial, facelets: idx }
+            CubeEvent::Facelets { serial, facelets: facelets_to_indices(&facelets) }
         }
         0x09 => {
-            let level = r.read_bits(8) as u8;
-            Gen2Message::Battery { serial, level }
+            let level = r.read_bits(8).min(100) as u8;
+            CubeEvent::Battery { serial, level }
         }
-        _ => Gen2Message::Other { kind, raw: data.to_vec() },
+        _ => CubeEvent::Other { kind, raw: data.to_vec() },
+    }
+}
+
+// === GAN Gen3 (V2) decoder (cf. scripts/proxy/gan.py) ===
+
+const GEN3_AXIS_MASKS: [u8; 6] = [2, 32, 8, 1, 16, 4];
+
+fn decode_gen_axis(mask: u8, masks: &[u8; 6]) -> Option<u8> {
+    for (i, &m) in masks.iter().enumerate() {
+        if mask == m {
+            return Some(i as u8);
+        }
+    }
+    None
+}
+
+/// Parse a decrypted GAN Gen3 (V2) 16-byte message.
+pub fn decode_gen3(data: &[u8]) -> CubeEvent {
+    let mut r = BitReader::new(data);
+    let magic = r.read_bits(8) as u8;
+    if magic != 0x55 {
+        return CubeEvent::Other { kind: magic, raw: data.to_vec() };
+    }
+    let mode = r.read_bits(8) as u8;
+    let _length = r.read_bits(8) as u8;
+    match mode {
+        0x01 => {
+            // MOVE: time(32) is split across bytes 3..7 in a scrambled order.
+            let t0 = r.read_bits(8);
+            let t1 = r.read_bits(8);
+            let t2 = r.read_bits(8);
+            let t3 = r.read_bits(8);
+            let _ts = (t3 << 24) | (t2 << 16) | (t1 << 8) | t0;
+            let serial_lo = r.read_bits(8);
+            let serial_hi = r.read_bits(8);
+            let serial = (serial_hi << 8) | serial_lo;
+            let _pad = r.read_bits(6) as u8;
+            let pow_ = r.read_bits(2) as u8;
+            let mask = r.read_bits(6) as u8;
+            let face = decode_gen_axis(mask, &GEN3_AXIS_MASKS).unwrap_or(6);
+            let dir = if pow_ == 2 { 1 } else { 0 };
+            let moves = if face < 6 {
+                vec![CubeMove { face, dir, elapsed: 0 }]
+            } else {
+                Vec::new()
+            };
+            CubeEvent::Move { serial: serial as u8, moves }
+        }
+        0x02 => {
+            // FACELETS: cubie layout identical to Gen2 §3.4 body.
+            let _pad = r.read_bits(6);
+            let state = read_cube_state(&mut r);
+            let facelets = to_facelet_string(&state);
+            CubeEvent::Facelets { serial: 0, facelets: facelets_to_indices(&facelets) }
+        }
+        0x10 => {
+            let level = r.read_bits(8).min(100) as u8;
+            CubeEvent::Battery { serial: 0, level }
+        }
+        _ => CubeEvent::Other { kind: mode, raw: data.to_vec() },
+    }
+}
+
+// === GAN Gen4 (V3) decoder (cf. scripts/proxy/gan.py) ===
+
+/// Parse a decrypted GAN Gen4 (V3) message (repeated 72-bit move records).
+pub fn decode_gen4(data: &[u8]) -> CubeEvent {
+    let mut r = BitReader::new(data);
+    let mode = r.read_bits(8) as u8;
+    let length = r.read_bits(8) as u8;
+    match mode {
+        0x01 => {
+            // One or more 72-bit records; each starts with 0x01.
+            let mut moves = Vec::new();
+            let mut serial = 0u8;
+            for _ in 0..length.max(1) {
+                let rec_kind = r.read_bits(8) as u8;
+                if rec_kind != 0x01 {
+                    break;
+                }
+                let t0 = r.read_bits(8);
+                let t1 = r.read_bits(8);
+                let t2 = r.read_bits(8);
+                let t3 = r.read_bits(8);
+                let _ts = (t3 << 24) | (t2 << 16) | (t1 << 8) | t0;
+                let s_lo = r.read_bits(8);
+                let s_hi = r.read_bits(8);
+                serial = ((s_hi << 8) | s_lo) as u8;
+                let _pad = r.read_bits(6) as u8;
+                let pow_ = r.read_bits(2) as u8;
+                let mask = r.read_bits(6) as u8;
+                let face = decode_gen_axis(mask, &GEN3_AXIS_MASKS).unwrap_or(6);
+                if face < 6 {
+                    moves.push(CubeMove { face, dir: if pow_ == 2 { 1 } else { 0 }, elapsed: 0 });
+                }
+            }
+            CubeEvent::Move { serial, moves }
+        }
+        0xED => {
+            let state = read_cube_state(&mut r);
+            let facelets = to_facelet_string(&state);
+            CubeEvent::Facelets { serial: 0, facelets: facelets_to_indices(&facelets) }
+        }
+        0xEF => {
+            let level = r.read_bits(8).min(100) as u8;
+            CubeEvent::Battery { serial: 0, level }
+        }
+        0xEC => CubeEvent::Other { kind: 0xEC, raw: data.to_vec() }, // gyro
+        _ => CubeEvent::Other { kind: mode, raw: data.to_vec() },
+    }
+}
+
+// === MoYu WCU_MY3 decoder (cf. scripts/proxy/moyu32.py) ===
+
+/// Decode a MY3 163 facelet snapshot. Facelets occupy bits 8..152 as 6 faces ×
+/// 8 stickers × 3 bits, in wire face order `[2,5,0,3,4,1]`; the center is
+/// implied at sticker j==3. Colours are indexed into "FBUDLR".
+fn decode_moyu_facelets(data: &[u8]) -> [u8; 54] {
+    const FACES: [usize; 6] = [2, 5, 0, 3, 4, 1];
+    const COLS: &[u8; 6] = b"FBUDLR";
+    let mut r = BitReader::new(data);
+    let _ = r.read_bits(8); // skip opcode
+    // Pull the 144 facelet bits (6×24) into a flat array first.
+    let mut bits = [0u8; 144];
+    for b in bits.iter_mut() {
+        *b = r.read_bits(1) as u8;
+    }
+    let read3 = |bits: &[u8; 144], off: usize| -> u8 {
+        (bits[off] << 2) | (bits[off + 1] << 1) | bits[off + 2]
+    };
+    let mut facelets = [b'U'; 54];
+    let mut pos = 0usize;
+    for i in 0..6 {
+        let wire_face = FACES[i];
+        for j in 0..8 {
+            let v = read3(&bits, wire_face * 24 + j * 3) as usize;
+            facelets[pos] = COLS[v.min(5)];
+            pos += 1;
+            if j == 3 {
+                facelets[pos] = COLS[wire_face];
+                pos += 1;
+            }
+        }
+    }
+    facelets
+}
+
+/// Parse a decrypted 20-byte MoYu WCU_MY3 frame.
+pub fn decode_moyu_my3(data: &[u8]) -> CubeEvent {
+    if data.is_empty() {
+        return CubeEvent::Other { kind: 0, raw: data.to_vec() };
+    }
+    match data[0] {
+        163 => {
+            let facelets = decode_moyu_facelets(data);
+            let mut r = BitReader::new(data);
+            let _ = r.read_bits(152);
+            let serial = r.read_bits(8) as u8;
+            CubeEvent::Facelets { serial, facelets: facelets_to_indices(&facelets) }
+        }
+        164 => CubeEvent::Battery { serial: 0, level: data[1].min(100) },
+        165 => {
+            // Move: serial at bits 88..96; 5 slots (elapsed 16b at 8+i*16, code
+            // 5b at 96+i*5). code >= 12 invalid.
+            let mut r = BitReader::new(data);
+            let _ = r.read_bits(88);
+            let serial = r.read_bits(8) as u8;
+            let mut codes = [(0u8, 0u16); 5];
+            for slot in codes.iter_mut() {
+                let elapsed = r.read_bits(16) as u16;
+                let code = r.read_bits(5) as u8;
+                *slot = (code, elapsed);
+            }
+            let mut moves = Vec::new();
+            for &(code, elapsed) in codes.iter() {
+                if code >= 12 {
+                    break;
+                }
+                let dev_face = (code >> 1) as usize;
+                let dir = code & 1;
+                // 'FBUDLR'[dev_face] -> URFDLB index.
+                let ch = *b"FBUDLR".get(dev_face).unwrap_or(&b'U');
+                let face = match ch {
+                    b'U' => 0, b'R' => 1, b'F' => 2, b'D' => 3, b'L' => 4, _ => 5,
+                };
+                moves.push(CubeMove { face, dir, elapsed });
+            }
+            CubeEvent::Move { serial, moves }
+        }
+        171 => CubeEvent::Other { kind: 171, raw: data.to_vec() }, // gyro
+        other => CubeEvent::Other { kind: other, raw: data.to_vec() },
+    }
+}
+
+// === QiYi decoder (cf. scripts/proxy/qiyi.py + cubebridge) ===
+
+const QIYI_AXIS_MAP: [u8; 6] = [4, 1, 3, 0, 2, 5];
+
+/// Parse a decrypted (AES-ECB) QiYi frame; the caller must have validated the
+/// `0xFE` magic and CRC16-Modbus.
+pub fn decode_qiyi(data: &[u8]) -> CubeEvent {
+    if data.len() < 3 || data[0] != 0xFE {
+        return CubeEvent::Other { kind: 0, raw: data.to_vec() };
+    }
+    let opcode = data[2];
+    match opcode {
+        0x02 | 0x04 => {
+            // State frame: 54 nibbles at offset 7, battery at offset 35.
+            const CENTER_FACELET: [usize; 6] = [4, 13, 22, 31, 40, 49];
+            let mut facelets = [b'U'; 54];
+            let std_colors = [b'U', b'R', b'F', b'D', b'L', b'B'];
+            for i in 0..6 {
+                facelets[CENTER_FACELET[i]] = std_colors[i];
+            }
+            if data.len() >= 38 {
+                // Nibble order is low-nibble-first; colours indexed by "LRDUFB".
+                const QIYI_COLORS: [u8; 6] = [b'L', b'R', b'D', b'U', b'F', b'B'];
+                for i in 0..54 {
+                    let byte = data[7 + (i >> 1)];
+                    let nib = if i % 2 == 0 { byte & 0x0F } else { byte >> 4 };
+                    facelets[i] = QIYI_COLORS.get(nib as usize).copied().unwrap_or(b'U');
+                }
+            }
+            CubeEvent::Facelets { serial: 0, facelets: facelets_to_indices(&facelets) }
+        }
+        0x03 => {
+            // State-change: 11 history slots at offset 36, 5 bytes each.
+            let mut moves = Vec::new();
+            let mut last_ts = 0u32;
+            for i in 0..11 {
+                let base = 36 + i * 5;
+                if base + 4 >= data.len() {
+                    break;
+                }
+                if data[base] == 0xFF && data[base + 1] == 0xFF {
+                    continue;
+                }
+                let ts = u32::from_be_bytes([
+                    data[base],
+                    data[base + 1],
+                    data[base + 2],
+                    data[base + 3],
+                ]);
+                let code = data[base + 4];
+                if code < 1 || code > 12 {
+                    continue;
+                }
+                let axis = QIYI_AXIS_MAP[((code - 1) >> 1) as usize];
+                let dir = code & 1;
+                let elapsed = ts.saturating_sub(last_ts).min(u16::MAX as u32) as u16;
+                last_ts = ts;
+                moves.push(CubeMove { face: axis, dir, elapsed });
+            }
+            CubeEvent::Move { serial: 0, moves }
+        }
+        0xCC => CubeEvent::Other { kind: 0xCC, raw: data.to_vec() }, // gyro
+        other => CubeEvent::Other { kind: other, raw: data.to_vec() },
+    }
+}
+
+impl CubeEvent {
+    /// Convenience: battery level if this is a Battery event.
+    pub fn battery_level(&self) -> Option<u8> {
+        match self {
+            CubeEvent::Battery { level, .. } => Some(*level),
+            _ => None,
+        }
+    }
+}
+
+// === MoYu MHC decoder (cf. cubebridge/main/cube_client.c) ===
+
+const MHC_AXIS_MAP: [u8; 6] = [3, 4, 5, 1, 2, 0];
+
+/// Parse a plaintext MoYu MHC notification: `d[0]` = count, then `count`
+/// 6-byte records of {ts[4], face, angular-delta}.
+pub fn decode_mhc(data: &[u8]) -> CubeEvent {
+    if data.is_empty() {
+        return CubeEvent::Other { kind: 0, raw: data.to_vec() };
+    }
+    let count = data[0] as usize;
+    let mut moves = Vec::new();
+    for i in 0..count {
+        let m = 1 + i * 6;
+        if m + 5 >= data.len() {
+            break;
+        }
+        let face_dev = data[m + 4];
+        if face_dev >= 6 {
+            break;
+        }
+        let delta = data[m + 5] as i8;
+        let dir = if delta >= 0 { 0 } else { 1 };
+        let face = MHC_AXIS_MAP[face_dev as usize];
+        moves.push(CubeMove { face, dir, elapsed: 0 });
+    }
+    CubeEvent::Move { serial: 0, moves }
+}
+
+/// Decode a notification for the given input protocol (undecrypted input must
+/// be decrypted by the caller first — except MHC which is plaintext).
+pub fn decode_event(proto: Protocol, data: &[u8]) -> CubeEvent {
+    match proto {
+        Protocol::Gen2 => decode_gen2(data),
+        Protocol::Gen3 => decode_gen3(data),
+        Protocol::Gen4 => decode_gen4(data),
+        Protocol::MoYu32 => decode_moyu_my3(data),
+        Protocol::QiYi => decode_qiyi(data),
+        // MHC shares the MoYu slot in the enum for now; chosen by the caller.
+        Protocol::Gan251 => decode_gen4(data),
+        _ => CubeEvent::Other { kind: 0, raw: data.to_vec() },
     }
 }
