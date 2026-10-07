@@ -23,11 +23,24 @@ per-crate `.cargo/config.toml` env vars (`ESP_IDF_SYS_ROOT_CRATE`,
 
 - Workspace root: `Cargo.toml` (`[workspace] members = ["shared","emu","proxy"]`)
 - `emu/src/main.rs` — wires BLE, HTTP, WiFi, serial in parallel
-- `emu/src/`: `ble.rs` (BLE peripheral, encrypt/notify), `http.rs` (ESP HTTP server + web UI), `wifi.rs` (STA/AP), `serial.rs` (USB JTAG console), `index.html` (embedded)
-- `shared/src/`: `protocol.rs` (bit-packed message encoding for 6 cube protocols), `crypto.rs` (AES-CBC/ECB via ESP-IDF hw), `device_config.rs` (MACs, keys, BLE UUIDs per protocol)
-- `proxy/src/main.rs` — self-contained GAN cube gateway: BLE Central (scan/connect/decrypt a physical GAN cube) + BLE Peripheral (virtual GAN cube GATT server)
-- `proxy/src/server.rs` — virtual GAN Gen2 cube peripheral (advertise + state/cmd chars + notify)
+- `emu/src/`: `ble.rs` (BLE peripheral, encrypt/notify), `http.rs` (emu move-injection endpoints, on top of shared config HTTP), `serial.rs` (USB JTAG console)
+- `shared/src/`: `protocol.rs` (encode/decode for 6 cube protocols + `CubeEvent`/`decode_*`), `crypto.rs` (AES-CBC/ECB via ESP-IDF hw), `device_config.rs` (MACs, keys, BLE UUIDs per protocol), `wifi.rs` (STA/AP), `config_http.rs` (web UI + WiFi/protocol/state endpoints), `index.html`
+- `proxy/src/main.rs` — self-contained cube gateway: BLE Central (scan/connect/identify/decrypt a physical cube) + BLE Peripheral (virtual cube GATT server) + WiFi/HTTP config
+- `proxy/src/central.rs` — multi-protocol Central: name pre-filter → connect → GATT service-UUID detection → per-protocol decrypt → `decode_*` → `CubeEvent`
+- `proxy/src/server.rs` — virtual cube peripheral; encodes for the configured output protocol
+- `proxy/src/config.rs` — NVS persistence of the output protocol
 - No Rust tests (`harness = false`)
+
+## Proxy gateway
+
+`proxy` runs three roles concurrently on one ESP32-C3 (verified on hardware):
+
+- **Central**: connects a physical cube and identifies its input protocol by GATT service UUID — supports **GAN Gen2/Gen3/Gen4, MoYu WCU (MY3), MoYu MHC (plaintext), QiYi**.
+- **Peripheral**: advertises a virtual cube in the **output protocol** chosen at runtime (Gen2/Gen3/Gen4/Gan251/MoYu32/QiYi) and forwards decoded moves.
+- **WiFi + HTTP**: shared config UI. `POST /api/protocol {"index":N}` persists to NVS and **reboots** to rebuild the BLE session (same approach as emu). `GET /api/protocol`, `/api/wifi/*`.
+
+Input->output protocol mapping is caller-independent; input is auto-detected, output is user-selected.
+
 
 ## Protocols Supported
 
