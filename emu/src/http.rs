@@ -106,7 +106,10 @@ pub fn start_http_server(
     protocol: Arc<Mutex<Protocol>>,
 ) -> anyhow::Result<EspHttpServer<'static>> {
     // Shared web UI + WiFi + protocol + device/state endpoints.
-    let on_change: Box<dyn Fn(Protocol) + Send + Sync> = Box::new(|p| {
+    let nvs_cb = nvs.clone();
+    let on_change: Box<dyn Fn(Protocol) + Send + Sync> = Box::new(move |p| {
+        // Persist the protocol so it survives a reboot.
+        crate::save_protocol(&nvs_cb, p);
         // Pre-set the BT MAC for the upcoming BLE restart (protocol switch).
         let cfg = shared::device_config::get_config(p);
         unsafe {
