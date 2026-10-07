@@ -230,15 +230,31 @@ pub async fn run(
             NimbleProperties::WRITE | NimbleProperties::NOTIFY,
         );
 
-        let cmd_char = service.lock().create_characteristic(
-            BleUuid::from_uuid128_string(cfg.cmd_uuid).unwrap(),
-            NimbleProperties::WRITE | NimbleProperties::WRITE_NO_RSP,
-        );
-
-        let state_char = service.lock().create_characteristic(
-            BleUuid::from_uuid128_string(cfg.state_uuid).unwrap(),
-            NimbleProperties::NOTIFY | NimbleProperties::READ,
-        );
+        // Some protocols (QiYi `fff6`, Timer `fff5`) use the SAME UUID for the write
+        // and the notify characteristic. The official App expects a single
+        // characteristic that is both writable and notifiable; exposing two
+        // characteristics with the same UUID makes the App's `setNotifyValue` fail on
+        // the write-only one and abort the connection. Merge them in that case.
+        let (cmd_char, state_char) = if cfg.cmd_uuid == cfg.state_uuid {
+            let c = service.lock().create_characteristic(
+                BleUuid::from_uuid128_string(cfg.cmd_uuid).unwrap(),
+                NimbleProperties::WRITE
+                    | NimbleProperties::WRITE_NO_RSP
+                    | NimbleProperties::NOTIFY
+                    | NimbleProperties::READ,
+            );
+            (c.clone(), c)
+        } else {
+            let cmd = service.lock().create_characteristic(
+                BleUuid::from_uuid128_string(cfg.cmd_uuid).unwrap(),
+                NimbleProperties::WRITE | NimbleProperties::WRITE_NO_RSP,
+            );
+            let st = service.lock().create_characteristic(
+                BleUuid::from_uuid128_string(cfg.state_uuid).unwrap(),
+                NimbleProperties::NOTIFY | NimbleProperties::READ,
+            );
+            (cmd, st)
+        };
 
         *state_char_ref.lock().unwrap() = Some(state_char.clone());
 
