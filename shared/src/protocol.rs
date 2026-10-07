@@ -971,11 +971,13 @@ fn decode_facelets(f: [u8; 54]) -> CubeState {
 
 // ==================== QiYi ====================
 
-// Face emission order for QiYi. The App's canonical order is LRDUFB
-// (L=0,R=1,D=2,U=3,F=4,B=5); the previous [3,1,4,0,2,5] emitted D and L swapped,
-// which the App rendered as an illegal state (D/L faces' non-center stickers
-// exchanged). Internal indices: U=0 R=1 F=2 D=3 L=4 B=5 -> [L,R,D,U,F,B].
-const QIYI_FACE_ORDER: [usize; 6] = [4, 1, 3, 0, 2, 5];
+// Face emission order for QiYi. The App's canonical position order is URFDLB
+// (verified from `getFacelets` + the solved facelet constant
+// "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB"): positions 0..5 are
+// U,R,F,D,L,B. Internal indices are the same (U=0 R=1 F=2 D=3 L=4 B=5).
+// The previous [4,1,3,0,2,5] emitted LRDUFB, which left only the fixed points
+// R(1)/B(5) correct -- matching the observed "D/L faces swapped" symptom.
+const QIYI_FACE_ORDER: [usize; 6] = [0, 1, 2, 3, 4, 5];
 
 pub fn build_facelets_qiyi(state: &CubeState) -> Vec<u8> {
     // Internal color codes are URFDLB (U=0 R=1 F=2 D=3 L=4 B=5). The QiYi App
