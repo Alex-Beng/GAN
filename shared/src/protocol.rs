@@ -971,24 +971,32 @@ fn decode_facelets(f: [u8; 54]) -> CubeState {
 
 // ==================== QiYi ====================
 
-const QIYI_FACE_ORDER: [usize; 6] = [3, 1, 4, 0, 2, 5];
+// Face emission order for QiYi. The App's canonical order is LRDUFB
+// (L=0,R=1,D=2,U=3,F=4,B=5); the previous [3,1,4,0,2,5] emitted D and L swapped,
+// which the App rendered as an illegal state (D/L faces' non-center stickers
+// exchanged). Internal indices: U=0 R=1 F=2 D=3 L=4 B=5 -> [L,R,D,U,F,B].
+const QIYI_FACE_ORDER: [usize; 6] = [4, 1, 3, 0, 2, 5];
 
 pub fn build_facelets_qiyi(state: &CubeState) -> Vec<u8> {
-    let color_chars = [0u8, 1, 2, 3, 4, 5];
+    // Internal color codes are URFDLB (U=0 R=1 F=2 D=3 L=4 B=5). The QiYi App
+    // (and csTimer) expect LRDUFB (L=0 R=1 D=2 U=3 F=4 B=5), so remap before packing;
+    // otherwise opposite pairs (e.g. U<->D / L<->B) get swapped and the App shows an
+    // illegal state (centers look fine, corners/edges are wrong).
+    const REMAP: [u8; 6] = [3, 1, 4, 2, 0, 5]; // U->3 R->1 F->4 D->2 L->0 B->5
     let mut facelets = [0u8; 54];
-    for i in 0..6 { facelets[CENTER_FACELET[i]] = color_chars[i]; }
+    for i in 0..6 { facelets[CENTER_FACELET[i]] = REMAP[i]; }
     for i in 0..8 {
         let j = state.cp[i] as usize;
         let ori = state.co[i] as usize;
         for k in 0..3 {
-            facelets[CORNER_FACELET[i][(k + ori) % 3]] = CORNER_COLOR[j][k];
+            facelets[CORNER_FACELET[i][(k + ori) % 3]] = REMAP[CORNER_COLOR[j][k] as usize];
         }
     }
     for i in 0..12 {
         let j = state.ep[i] as usize;
         let ori = state.eo[i] as usize;
         for k in 0..2 {
-            facelets[EDGE_FACELET[i][(k + ori) % 2]] = EDGE_COLOR[j][k];
+            facelets[EDGE_FACELET[i][(k + ori) % 2]] = REMAP[EDGE_COLOR[j][k] as usize];
         }
     }
     let mut fb = Vec::new();
@@ -1020,22 +1028,25 @@ pub fn reverse_slice(data: &[u8]) -> Vec<u8> {
 
 pub fn build_full_qiyi(facelets: &[u8], serial: u16, battery: u8, _mac: &[u8; 6]) -> Vec<u8> {
     // QiYi "hello"/state record, csTimer-compatible:
-    //   [0x02][ts:4 BE][facelets:27][battery][pad]  == 34 content bytes
-    // The App parses: role=data[2], ts=data[3..7], facelets=data[7..34], battery=data[34].
+    //   [0x02][ts:4 BE][facelets:27][bat][bat]  == 34 content bytes -> frame len 0x26
+    // App offsets: role=data[2], ts=data[3..7], facelets=data[7..34],
+    // battery is read from data[35] (`field_33` -> BlueDeviceModel.setBattery);
+    // data[34] is unused by csTimer, we mirror the battery there as well.
     let mut content: Vec<u8> = Vec::with_capacity(34);
     content.push(0x02);
     content.extend_from_slice(&(serial as u32).to_be_bytes());
     for i in 0..27 {
         content.push(facelets.get(i).copied().unwrap_or(0));
     }
-    content.push(battery.min(100));
-    content.push(0);
+    let b = battery.min(100);
+    content.push(b); // data[34]
+    content.push(b); // data[35]
     content
 }
 
 pub fn build_move_qiyi(serial: u16, history: &[(u8, u8, u16)]) -> Vec<u8> {
     // State-change record (role 0x03), csTimer-compatible, 92 content bytes -> frame len 0x60.
-    //   [0x03][ts:4 BE][facelets:27(unused)][firstMove] ... history entries (ts:4 BE + mv)
+    //   [0x03][ts:4 BE][facelets:27(unused)][firstMove][battery] ... history entries (ts:4 BE + mv)
     let axis_map = [4u8, 1, 3, 0, 2, 5];
     let encode = |face: u8, dir: u8| -> u8 { ((axis_map[(face as usize) & 0x7] << 1) | (dir & 1)) + 1 };
 
@@ -1045,6 +1056,7 @@ pub fn build_move_qiyi(serial: u16, history: &[(u8, u8, u16)]) -> Vec<u8> {
     if let Some(&(face, dir, _)) = history.first() {
         c[32] = encode(face, dir);
     }
+    c[33] = 80; // battery (data[35])
     // history entries: newest first at content[84], then 79, 74, ...
     let mut off: i32 = 84;
     let mut t: u32 = 0;
