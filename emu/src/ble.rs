@@ -739,12 +739,19 @@ pub async fn run(
             let delay = (*move_delay_ms.lock().unwrap()).max(1);
             Timer::after(Duration::from_millis(delay)).await;
 
-            let cs = cube_state_loop.lock().unwrap();
-            let mut facelets_msg = protocol::build_facelets(current_proto, serial, &cs);
-            drop(cs);
-            ble_encrypt(current_proto, &mut facelets_msg, &key_loop, &iv_loop);
-            if *connected_loop.lock().unwrap() {
-                state_char_loop.lock().set_value(&facelets_msg).notify();
+            // MoYu32 (WCU): do not push a 163 facelets frame after every move.
+            // The WCU app maps every 163 to EVENT_CUBE_STATE_SYNC (196866),
+            // which its in-match timer handlers treat as "reset state" and
+            // restart the scramble/timer (checkpart.AgainView()). Moves travel
+            // on 165; 163 is only sent on subscribe (initial) and on request.
+            if current_proto != Protocol::MoYu32 {
+                let cs = cube_state_loop.lock().unwrap();
+                let mut facelets_msg = protocol::build_facelets(current_proto, serial, &cs);
+                drop(cs);
+                ble_encrypt(current_proto, &mut facelets_msg, &key_loop, &iv_loop);
+                if *connected_loop.lock().unwrap() {
+                    state_char_loop.lock().set_value(&facelets_msg).notify();
+                }
             }
         }
 
