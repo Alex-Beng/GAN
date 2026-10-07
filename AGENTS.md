@@ -25,7 +25,8 @@ per-crate `.cargo/config.toml` env vars (`ESP_IDF_SYS_ROOT_CRATE`,
 - `emu/src/main.rs` — wires BLE, HTTP, WiFi, serial in parallel
 - `emu/src/`: `ble.rs` (BLE peripheral, encrypt/notify), `http.rs` (ESP HTTP server + web UI), `wifi.rs` (STA/AP), `serial.rs` (USB JTAG console), `index.html` (embedded)
 - `shared/src/`: `protocol.rs` (bit-packed message encoding for 6 cube protocols), `crypto.rs` (AES-CBC/ECB via ESP-IDF hw), `device_config.rs` (MACs, keys, BLE UUIDs per protocol)
-- `proxy/src/main.rs` — BLE Central PoC: scan physical cube, connect, enumerate GATT, log raw notify bytes
+- `proxy/src/main.rs` — self-contained GAN cube gateway: BLE Central (scan/connect/decrypt a physical GAN cube) + BLE Peripheral (virtual GAN cube GATT server)
+- `proxy/src/server.rs` — virtual GAN Gen2 cube peripheral (advertise + state/cmd chars + notify)
 - No Rust tests (`harness = false`)
 
 ## Protocols Supported

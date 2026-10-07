@@ -1,12 +1,16 @@
-//! proxy firmware: ESP32-C3 GATT Central.
+//! proxy firmware: self-contained ESP32-C3 GAN cube gateway.
 //!
-//! Stage 2: scan + connect a physical GAN cube, establish link encryption,
-//! subscribe to the state characteristic, then **decrypt** each notification
-//! (GAN Gen2/V1 AES-CBC, key/IV derived from the cube MAC) and decode it into
-//! moves / facelets.
+//! Dual BLE role in one firmware:
+//!   - **Central**: scan + connect a physical GAN cube, establish link
+//!     encryption, subscribe to its state characteristic and decrypt the
+//!     Gen2 (V1) notifications.
+//!   - **Peripheral**: advertise as a virtual GAN cube and serve the decoded
+//!     moves to a phone app (GAN Gen2 GATT server).
 //!
 //! Build from this directory (its .cargo/config.toml selects the proxy sdkconfig):
 //!   cd proxy && cargo build
+
+mod server;
 
 use esp_idf_svc::log::EspLogger;
 use esp32_nimble::utilities::BleUuid;
@@ -15,6 +19,8 @@ use esp32_nimble::{BLEDevice, BLEScan};
 use shared::crypto;
 use shared::device_config::{self, Protocol};
 use shared::protocol::{self, Gen2Message};
+
+use crate::server::VirtualCube;
 
 /// Known GAN cube service UUIDs (must match shared::device_config).
 const GAN_SERVICE_UUIDS: &[&str] = &[
@@ -49,21 +55,18 @@ async fn find_cube(ble_device: &BLEDevice) -> anyhow::Result<esp32_nimble::BLEAd
             .window(100)
             .filter_duplicates(false);
 
-        log::info!("Scanning 15s — advertising every device seen (wake the cube!):");
+        log::info!("Scanning 15s for a physical cube (wake it up!)...");
 
         let addr = scan
             .start(ble_device, 15000, |device, data| {
                 let name = name_of(&data);
-                let svc: Vec<String> = data.service_uuids().map(|u| u.to_string()).collect();
-                log::info!(
-                    "  seen addr={} rssi={} name='{}' svcs={:?}",
-                    device.addr(),
-                    device.rssi(),
-                    name,
-                    svc
-                );
                 if matches_gan(&data) {
-                    log::info!("  => GAN cube candidate! name='{}'", name);
+                    log::info!(
+                        "  => GAN cube candidate! addr={} name='{}' rssi={}",
+                        device.addr(),
+                        name,
+                        device.rssi()
+                    );
                     return Some(device.addr());
                 }
                 None
@@ -77,46 +80,40 @@ async fn find_cube(ble_device: &BLEDevice) -> anyhow::Result<esp32_nimble::BLEAd
     }
 }
 
-/// Decrypt a GAN Gen2/V1 notification and log the decoded event.
-fn handle_notify(data: &[u8], key: &[u8; 16], iv: &[u8; 16]) {
+/// Decrypt a GAN Gen2/V1 notification, then re-emit decoded moves to the
+/// virtual cube server.
+fn handle_notify(data: &[u8], key: &[u8; 16], iv: &[u8; 16], vcube: &VirtualCube) {
     if data.len() < 16 {
         log::warn!("short notify ({} bytes): {:02X?}", data.len(), data);
         return;
     }
     let mut buf = data.to_vec();
     crypto::decrypt_msg(&mut buf, key, iv);
-    log::debug!("raw={:02X?} dec={:02X?}", data, buf);
     match protocol::decode_gen2(&buf) {
         Gen2Message::Move { serial, moves } => {
             let names = ["U", "R", "F", "D", "L", "B"];
-            // Slot 0 is the newest move; following slots are history. Only report
-            // slots with a valid face.
-            let mut s = String::new();
-            for m in moves.iter().take(7) {
-                if m.face >= 6 {
-                    break;
-                }
-                if !s.is_empty() {
-                    s.push(' ');
-                }
-                s.push_str(names[m.face as usize]);
-                if m.dir != 0 {
-                    s.push('\'');
-                }
-            }
+            // Slot 0 is the newest move; the rest is history. Re-emit only the
+            // newest move to the phone (each notification carries one new step).
             if let Some(m0) = moves.first() {
-                log::info!("MOVE serial={} [{}] newest_elapsed={}ms", serial, s, m0.elapsed);
+                if m0.face < 6 {
+                    log::info!(
+                        "MOVE serial={} {}{} ({}ms)",
+                        serial,
+                        names[m0.face as usize],
+                        if m0.dir == 0 { "" } else { "'" },
+                        m0.elapsed
+                    );
+                    vcube.push_move(m0.face, m0.dir);
+                }
             }
         }
         Gen2Message::Facelets { serial, .. } => {
-            log::info!("FACELETS serial={} (state snapshot)", serial);
+            log::info!("FACELETS serial={} (physical cube snapshot)", serial);
         }
         Gen2Message::Battery { serial, level } => {
             log::info!("BATTERY serial={} level={}%", serial, level);
         }
-        Gen2Message::Gyro { qw, qx, qy, qz } => {
-            log::debug!("GYRO qw={} qx={} qy={} qz={}", qw, qx, qy, qz);
-        }
+        Gen2Message::Gyro { .. } => {}
         Gen2Message::Other { kind, raw } => {
             log::debug!("OTHER kind=0x{:02X} raw={:02X?}", kind, raw);
         }
@@ -126,26 +123,29 @@ fn handle_notify(data: &[u8], key: &[u8; 16], iv: &[u8; 16]) {
 fn main() {
     esp_idf_svc::sys::link_patches();
     EspLogger::initialize_default();
-    log::info!("=== gan-proxy: ESP32-C3 BLE Central (GATT client) — decrypt + decode ===");
+    log::info!("=== gan-proxy: self-contained GAN cube gateway (Central + Peripheral) ===");
 
     esp_idf_svc::hal::task::block_on(async {
         let ble_device = BLEDevice::take();
 
-        let addr = match find_cube(ble_device).await {
-            Ok(a) => a,
-            Err(e) => {
-                log::error!("scan failed: {e}");
-                return;
+        // Peripheral first: advertise the virtual cube so a phone can connect.
+        let vcube = VirtualCube::setup(ble_device, *device_config::get_config(Protocol::Gen2).mac);
+        let vcube_notify = vcube.clone();
+
+        // Central: find and connect the physical cube.
+        let addr = loop {
+            match find_cube(ble_device).await {
+                Ok(a) => break a,
+                Err(e) => log::error!("scan error: {e}"),
             }
         };
 
-        // Derive the GAN Gen2 key/IV from the cube's MAC. `derive_key_iv`
-        // expects the MAC in **display order** (e.g. AA:BB:CC:DD:EE:FF) and
-        // reverses it internally as the salt.
+        // Key/IV for the physical cube: `derive_key_iv` expects the MAC in
+        // display order and reverses it internally as the salt.
         let mac = addr.as_be_bytes();
         let cfg = device_config::get_config(Protocol::Gen2);
         let (key, iv) = crypto::derive_key_iv(&mac, cfg.base_key, cfg.base_iv);
-        log::info!("Cube MAC {:02X?} -> key {:02X?} iv {:02X?}", mac, key, iv);
+        log::info!("Physical cube MAC {:02X?}", mac);
 
         log::info!("Connecting to {addr}...");
         let mut client = ble_device.new_client();
@@ -156,42 +156,36 @@ fn main() {
         log::info!("Connected to {addr}");
 
         log::info!("Initiating security (link encryption)...");
-        match client.secure_connection().await {
-            Ok(()) => log::info!("Security established (encrypted link)"),
-            Err(e) => log::warn!("secure_connection failed: {e:?} (continuing anyway)"),
+        if let Err(e) = client.secure_connection().await {
+            log::warn!("secure_connection failed: {e:?} (continuing anyway)");
         }
 
-        // Decrypt + decode each notification and log the decoded event.
-        // Only subscribe to the protocol's STATE characteristic (the OTA notify
-        // char in the OTA service must be ignored).
-        let state_uuid = BleUuid::from_uuid128_string(device_config::get_config(Protocol::Gen2).state_uuid).unwrap();
+        // Subscribe only to the Gen2 state characteristic.
+        let state_uuid =
+            BleUuid::from_uuid128_string(cfg.state_uuid).unwrap();
         match client.get_services().await {
             Ok(services) => {
                 for svc in services {
-                    log::info!("Service {}", svc.uuid());
-                    match svc.get_characteristics().await {
-                        Ok(chars) => {
-                            for chr in chars {
-                                log::info!("  Char {} props={:?}", chr.uuid(), chr.properties());
-                                if chr.can_notify() && chr.uuid() == state_uuid {
-                                    chr.on_notify(move |data: &[u8]| {
-                                        handle_notify(data, &key, &iv)
-                                    });
-                                    match chr.subscribe_notify(false).await {
-                                        Ok(()) => log::info!("    subscribed (state notify)"),
-                                        Err(e) => log::warn!("    subscribe failed: {e:?}"),
-                                    }
+                    if let Ok(chars) = svc.get_characteristics().await {
+                        for chr in chars {
+                            if chr.can_notify() && chr.uuid() == state_uuid {
+                                let vcube_cb = vcube_notify.clone();
+                                chr.on_notify(move |data: &[u8]| {
+                                    handle_notify(data, &key, &iv, &vcube_cb)
+                                });
+                                match chr.subscribe_notify(false).await {
+                                    Ok(()) => log::info!("Subscribed to physical cube state"),
+                                    Err(e) => log::warn!("subscribe failed: {e:?}"),
                                 }
                             }
                         }
-                        Err(e) => log::warn!("  char discovery failed: {e:?}"),
                     }
                 }
             }
             Err(e) => log::error!("service discovery failed: {e:?}"),
         }
 
-        log::info!("Running; rotate the cube to see decoded moves.");
+        log::info!("Gateway running: rotate the cube; connect your phone to the virtual cube.");
 
         loop {
             embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
