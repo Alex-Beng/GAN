@@ -11,6 +11,29 @@ use shared::device_config::{self, Protocol};
 use crate::http::{MOVE_FACE_DELAY, MOVE_FACE_DISCONNECT, MOVE_FACE_TIME};
 use shared::protocol;
 
+/// Queue of already-encrypted frames awaiting a single sender task.
+type SendQueue = Arc<Mutex<VecDeque<Vec<u8>>>>;
+
+/// Producer handle used by callbacks / the move loop. It only enqueues bytes;
+/// the actual `set_value().notify()` is done by one dedicated sender task, so
+/// callbacks (which run on the NimBLE host task) never contend for the
+/// characteristic mutex with the sender (avoids the QiYi/Timer deadlock where
+/// write and notify share one characteristic).
+struct SendHandle {
+    q: SendQueue,
+}
+
+impl SendHandle {
+    fn new(q: &SendQueue) -> Self {
+        Self { q: q.clone() }
+    }
+    fn set_value(&mut self, value: &[u8]) -> &mut Self {
+        self.q.lock().unwrap().push_back(value.to_vec());
+        self
+    }
+    fn notify(&mut self) {}
+}
+
 fn ble_encrypt(proto: Protocol, data: &mut Vec<u8>, key: &[u8; 16], iv: &[u8; 16]) {
     match proto {
         Protocol::MoYu32 => crypto::moyu32_encrypt(data, key, iv),
@@ -81,6 +104,8 @@ pub async fn run(
         // Set when a command (bind / name change) requires a BLE re-advertise.
         let need_restart = Arc::new(Mutex::new(false));
         let need_restart_cmd = need_restart.clone();
+        // Single producer->sender queue for all notifications (see SendHandle).
+        let send_queue: SendQueue = Arc::new(Mutex::new(VecDeque::new()));
 
         server.on_connect(move |_server, _desc| {
             log::info!("Client connected");
@@ -258,10 +283,32 @@ pub async fn run(
 
         *state_char_ref.lock().unwrap() = Some(state_char.clone());
 
+        // Dedicated sender task: the ONLY place that locks `state_char` and calls
+        // notify(). Callbacks only enqueue (see SendHandle), so a write callback
+        // can never deadlock against a notification in flight.
+        {
+            let sq = send_queue.clone();
+            let sc = state_char.clone();
+            let conn = connected.clone();
+            std::thread::spawn(move || loop {
+                let item = sq.lock().unwrap().pop_front();
+                match item {
+                    Some(bytes) => {
+                        if *conn.lock().unwrap() {
+                            let mut c = sc.lock();
+                            c.set_value(&bytes).notify();
+                        }
+                    }
+                    None => std::thread::sleep(std::time::Duration::from_millis(10)),
+                }
+            });
+        }
+
+        let send_queue_sub = send_queue.clone();
+
         let key_sub = key.clone();
         let iv_sub = iv.clone();
         let shared_serial_sub = shared_serial_conn.clone();
-        let state_char_sub = state_char.clone();
         let cube_state_sub = cube_state.clone();
         let proto_sub = proto;
         state_char.lock().on_subscribe(move |_char, _desc, cur_notify| {
@@ -269,14 +316,14 @@ pub async fn run(
             if proto_sub == Protocol::Robot {
                 let msg = protocol::build_robot_info(protocol::RobotInfoType::Model);
                 log::info!("Sending initial ROBOT MODEL: {:02X?}", &msg);
-                state_char_sub.lock().set_value(&msg).notify();
+                send_queue_sub.lock().unwrap().push_back(msg);
                 let msg2 = protocol::build_robot_info(protocol::RobotInfoType::Version);
                 log::info!("Sending initial ROBOT VERSION: {:02X?}", &msg2);
-                state_char_sub.lock().set_value(&msg2).notify();
+                send_queue_sub.lock().unwrap().push_back(msg2);
             } else if proto_sub == Protocol::Timer {
                 let msg = protocol::build_timer_status(protocol::TimerStatus::Idle);
                 log::info!("Sending initial TIMER STATUS: {:02X?}", &msg);
-                state_char_sub.lock().set_value(&msg).notify();
+                send_queue_sub.lock().unwrap().push_back(msg);
             } else {
                 let serial = *shared_serial_sub.lock().unwrap();
                 let cs = cube_state_sub.lock().unwrap();
@@ -284,11 +331,11 @@ pub async fn run(
                 drop(cs);
                 ble_encrypt(proto_sub, &mut msg, &key_sub, &iv_sub);
                 log::info!("Sending initial FACELETS: {:02X?}", &msg);
-                state_char_sub.lock().set_value(&msg).notify();
+                send_queue_sub.lock().unwrap().push_back(msg);
             }
         });
 
-        let state_char_cmd = state_char.clone();
+        let send_queue_cmd = send_queue.clone();
 
         let key_cl = key.clone();
         let iv_cl = iv.clone();
@@ -315,7 +362,7 @@ pub async fn run(
                 crypto::moyu32_decrypt(&mut buf, &key_cl, &iv_cl);
                 let cmd = protocol::parse_command_moyu32(&buf);
                 log::info!("MoYu32 CMD: {:?}, decrypted: {:02X?}", cmd, &buf);
-                let mut state_char = state_char_cmd.lock();
+                let mut state_char = SendHandle::new(&send_queue_cmd);
                 match cmd {
                     protocol::MoYuCommand::Facelets => {
                         let cs = cube_state_cl.lock().unwrap();
@@ -405,7 +452,7 @@ pub async fn run(
             if proto_cl == Protocol::Timer {
                 let cmd = protocol::parse_timer_command(data);
                 log::info!("TIMER CMD: {:?}", cmd);
-                let mut state_char = state_char_cmd.lock();
+                let mut state_char = SendHandle::new(&send_queue_cmd);
                 match cmd {
                     protocol::TimerCommand::GetStatus => {
                         let msg = protocol::build_timer_status(protocol::TimerStatus::Idle);
@@ -454,7 +501,7 @@ pub async fn run(
             if proto_cl == Protocol::Robot {
                 let cmd = protocol::parse_robot_command(data);
                 log::info!("ROBOT CMD: {:?}", cmd);
-                let mut state_char = state_char_cmd.lock();
+                let mut state_char = SendHandle::new(&send_queue_cmd);
                 match cmd {
                     protocol::RobotCommand::Order(v) => {
                         log::info!("Robot order: {}", v);
@@ -527,7 +574,7 @@ pub async fn run(
             let cmd = protocol::parse_command_type(proto_cl, &buf);
             log::info!("CMD: {:?}, decrypted: {:02X?}", cmd, &buf);
 
-            let mut state_char = state_char_cmd.lock();
+            let mut state_char = SendHandle::new(&send_queue_cmd);
             match cmd {
                 protocol::IncomingCommand::Facelets => {
                     let cs = cube_state_cl.lock().unwrap();
@@ -640,7 +687,7 @@ pub async fn run(
 
         log::info!("BLE advertising as '{}' ({:?})", adv_name, proto);
 
-        let state_char_loop = state_char.clone();
+        let send_queue_loop = send_queue.clone();
         let key_loop = key.clone();
         let iv_loop = iv.clone();
         let cube_state_loop = cube_state.clone();
@@ -689,7 +736,7 @@ pub async fn run(
                     let mut msg = protocol::build_disconnect_moyu32();
                     ble_encrypt(proto, &mut msg, &key_loop, &iv_loop);
                     if *connected_loop.lock().unwrap() {
-                        state_char_loop.lock().set_value(&msg).notify();
+                        send_queue_loop.lock().unwrap().push_back(msg);
                     }
                 }
                 log::info!("BLE disconnect notification sent");
@@ -749,7 +796,7 @@ pub async fn run(
             let mut move_msg = protocol::build_move(current_proto, serial, &history, cube_time);
             ble_encrypt(current_proto, &mut move_msg, &key_loop, &iv_loop);
             if *connected_loop.lock().unwrap() {
-                state_char_loop.lock().set_value(&move_msg).notify();
+                send_queue_loop.lock().unwrap().push_back(move_msg);
             }
 
             let delay = (*move_delay_ms.lock().unwrap()).max(1);
@@ -766,7 +813,7 @@ pub async fn run(
                 drop(cs);
                 ble_encrypt(current_proto, &mut facelets_msg, &key_loop, &iv_loop);
                 if *connected_loop.lock().unwrap() {
-                    state_char_loop.lock().set_value(&facelets_msg).notify();
+                    send_queue_loop.lock().unwrap().push_back(facelets_msg);
                 }
             }
         }
