@@ -1055,8 +1055,18 @@ pub fn build_full_qiyi(facelets: &[u8], serial: u16, battery: u8, _mac: &[u8; 6]
 pub fn build_move_qiyi(serial: u16, state: &CubeState, history: &[(u8, u8, u16)]) -> Vec<u8> {
     // State-change record (role 0x03), csTimer-compatible, 92 content bytes -> frame len 0x60.
     //   [0x03][ts:4 BE][facelets:27][firstMove][battery] ... history entries (ts:4 BE + mv)
-    let axis_map = [4u8, 1, 3, 0, 2, 5];
-    let encode = |face: u8, dir: u8| -> u8 { ((axis_map[(face as usize) & 0x7] << 1) | (dir & 1)) + 1 };
+    // Move code `mv` as the App decodes it:
+    //   faceIdx = (mv-1) >> 1   indexed in LRDUFB order (L0 R1 D2 U3 F4 B5)
+    //   dir     = (mv-1) & 1    0 -> counter-clockwise (')  , 1 -> clockwise
+    // Internal faces are URFDLB (U0 R1 F2 D3 L4 B5); the App order LRDUFB gives
+    // the face-index table below. Verified against the App: sending U showed F',
+    // R->R', F->U', D->L', L->D', B->B' before the fix.
+    const QIYI_MOVE_FACE: [u8; 6] = [3, 1, 4, 2, 0, 5]; // URFDLB -> LRDUFB index
+    let encode = |face: u8, dir: u8| -> u8 {
+        let fi = QIYI_MOVE_FACE[(face as usize) & 0x7];
+        let d = (1 - (dir & 1)) & 1; // emu dir 0=cw -> App dirbit 1=cw
+        (fi << 1 | d) + 1
+    };
 
     let mut c = vec![0u8; 92];
     c[0] = 0x03;
