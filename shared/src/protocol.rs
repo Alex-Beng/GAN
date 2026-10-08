@@ -426,7 +426,7 @@ pub fn build_move(proto: Protocol, serial: u16, history: &[(u8, u8, u16)], cube_
             // NOTE: the emu move loop builds the QiYi 0x03 frame itself (with the
             // real cube state) via `build_move_qiyi`. This path keeps the generic
             // signature happy with a solved placeholder.
-            let payload = build_move_qiyi(serial, &CubeState::solved(), history);
+            let payload = build_move_qiyi(serial as u32, &CubeState::solved(), history);
             qiyi_frame(&payload)
         }
         Protocol::Timer => Vec::new(),
@@ -1052,9 +1052,12 @@ pub fn build_full_qiyi(facelets: &[u8], serial: u16, battery: u8, _mac: &[u8; 6]
     content
 }
 
-pub fn build_move_qiyi(serial: u16, state: &CubeState, history: &[(u8, u8, u16)]) -> Vec<u8> {
+pub fn build_move_qiyi(now_ms: u32, state: &CubeState, history: &[(u8, u8, u16)]) -> Vec<u8> {
     // State-change record (role 0x03), csTimer-compatible, 92 content bytes -> frame len 0x60.
-    //   [0x03][ts:4 BE][facelets:27][firstMove][battery] ... history entries (ts:4 BE + mv)
+    //   [0x03][ts:4 BE = device ms][facelets:27][firstMove][battery] ... history (ts:4 BE + mv)
+    // The App derives the solve time from these device timestamps (ms), so `now_ms`
+    // MUST be a real millisecond base, not a serial counter (else the time reads ~0).
+    //
     // Move code `mv` as the App decodes it:
     //   faceIdx = (mv-1) >> 1   indexed in LRDUFB order (L0 R1 D2 U3 F4 B5)
     //   dir     = (mv-1) & 1    0 -> counter-clockwise (')  , 1 -> clockwise
@@ -1070,7 +1073,7 @@ pub fn build_move_qiyi(serial: u16, state: &CubeState, history: &[(u8, u8, u16)]
 
     let mut c = vec![0u8; 92];
     c[0] = 0x03;
-    c[1..5].copy_from_slice(&(serial as u32).to_be_bytes());
+    c[1..5].copy_from_slice(&now_ms.to_be_bytes());
     // Current facelets (27 bytes, wire order/encoding) at content[5..32).
     let packed = pack_facelets_nibble(&build_facelets_qiyi(state));
     for (i, b) in packed.iter().take(27).enumerate() {
@@ -1080,15 +1083,16 @@ pub fn build_move_qiyi(serial: u16, state: &CubeState, history: &[(u8, u8, u16)]
         c[32] = encode(face, dir);
     }
     c[33] = 80; // battery (data[35])
-    // history entries: newest first at content[84], then 79, 74, ...
+    // History: newest first at content[84], then 79, 74, ... Timestamps are
+    // absolute device ms (big-endian); step back by each entry's gap going older.
     let mut off: i32 = 84;
-    let mut t: u32 = 0;
+    let mut t: i64 = now_ms as i64;
     for &(face, dir, elapsed) in history.iter() {
         if off < 34 { break; }
-        t = t.wrapping_add(elapsed as u32);
         let o = off as usize;
-        c[o..o + 4].copy_from_slice(&t.to_be_bytes());
+        c[o..o + 4].copy_from_slice(&(t as u32).to_be_bytes());
         c[o + 4] = encode(face, dir);
+        t -= elapsed as i64;
         off -= 5;
     }
     c

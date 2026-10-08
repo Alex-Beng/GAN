@@ -822,9 +822,10 @@ pub async fn run(
                 .min(u32::MAX as u64) as u32;
 
             let mut move_msg = if current_proto == Protocol::QiYi {
-                // 0x03 state-change frame carries the current facelets.
+                // 0x03 state-change frame carries the current facelets and a real
+                // device-ms timestamp (the App derives the solve time from it).
                 let cs = cube_state_loop.lock().unwrap();
-                let payload = protocol::build_move_qiyi(serial, &cs, &history);
+                let payload = protocol::build_move_qiyi(cube_time, &cs, &history);
                 drop(cs);
                 protocol::qiyi_frame(&payload)
             } else {
