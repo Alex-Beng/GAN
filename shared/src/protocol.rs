@@ -423,7 +423,10 @@ pub fn build_move(proto: Protocol, serial: u16, history: &[(u8, u8, u16)], cube_
         }
         Protocol::MoYu32 => build_move_moyu32(serial, history),
         Protocol::QiYi => {
-            let payload = build_move_qiyi(serial, history);
+            // NOTE: the emu move loop builds the QiYi 0x03 frame itself (with the
+            // real cube state) via `build_move_qiyi`. This path keeps the generic
+            // signature happy with a solved placeholder.
+            let payload = build_move_qiyi(serial, &CubeState::solved(), history);
             qiyi_frame(&payload)
         }
         Protocol::Timer => Vec::new(),
@@ -538,6 +541,9 @@ pub enum IncomingCommand {
     Battery,
     Reset,
     MoveHistory { start_serial: u8, count: u8 },
+    /// QiYi (Smart Player Pro) "set state / reset": `FC 4C 08 <ts:4 LE> <facelets:27> <crc>`.
+    /// The payload is read by the caller straight from the decrypted buffer.
+    QiYiSetState,
     Unknown,
 }
 
@@ -1046,15 +1052,20 @@ pub fn build_full_qiyi(facelets: &[u8], serial: u16, battery: u8, _mac: &[u8; 6]
     content
 }
 
-pub fn build_move_qiyi(serial: u16, history: &[(u8, u8, u16)]) -> Vec<u8> {
+pub fn build_move_qiyi(serial: u16, state: &CubeState, history: &[(u8, u8, u16)]) -> Vec<u8> {
     // State-change record (role 0x03), csTimer-compatible, 92 content bytes -> frame len 0x60.
-    //   [0x03][ts:4 BE][facelets:27(unused)][firstMove][battery] ... history entries (ts:4 BE + mv)
+    //   [0x03][ts:4 BE][facelets:27][firstMove][battery] ... history entries (ts:4 BE + mv)
     let axis_map = [4u8, 1, 3, 0, 2, 5];
     let encode = |face: u8, dir: u8| -> u8 { ((axis_map[(face as usize) & 0x7] << 1) | (dir & 1)) + 1 };
 
     let mut c = vec![0u8; 92];
     c[0] = 0x03;
     c[1..5].copy_from_slice(&(serial as u32).to_be_bytes());
+    // Current facelets (27 bytes, wire order/encoding) at content[5..32).
+    let packed = pack_facelets_nibble(&build_facelets_qiyi(state));
+    for (i, b) in packed.iter().take(27).enumerate() {
+        c[5 + i] = *b;
+    }
     if let Some(&(face, dir, _)) = history.first() {
         c[32] = encode(face, dir);
     }
@@ -1097,25 +1108,32 @@ pub fn build_gyro_qiyi(qw: f32, qx: f32, qy: f32, qz: f32) -> Vec<u8> {
 }
 
 pub fn parse_command_qiyi(data: &[u8]) -> IncomingCommand {
-    if data.is_empty() { return IncomingCommand::Unknown; }
-    match data[0] {
-        // Smart Player Pro bind handshake: `FC 2A <flag> <ts4> <userId> <mac6> <crc>`.
-        // Replying with the current cube state lets the App observe the device.
-        0xFC => IncomingCommand::Facelets,
-        // Standard QiYi frame: `FE <len> <role> <payload...> <crc16>`.
-        0xFE => {
-            if data.len() < 3 { return IncomingCommand::Unknown; }
-            match data[2] {
-                0x02 | 0x05 => IncomingCommand::Facelets, // 配对后首条 / 查询
-                0x03 => IncomingCommand::MoveHistory {
-                    start_serial: data.get(3).copied().unwrap_or(0),
-                    count: 0,
-                },
-                _ => IncomingCommand::Unknown,
-            }
-        }
-        _ => IncomingCommand::Unknown,
+    // QiYi downlink is plain (already AES-ECB encrypted on the wire). Frames:
+    //   * `FE 09 <role> <ts:4> <crc>`  -> the App's ACK for a received frame; IGNORE.
+    //   * `FC 2A ...`                  -> bind handshake; ignore for now.
+    //   * `BA 12 ...`                  -> query; ignore for now.
+    //   * `FC 4C 08 <ts:4 LE> <facelets:27> <crc>` -> set state / reset.
+    if data.len() < 3 { return IncomingCommand::Unknown; }
+    if data[0] == 0xFC && data[1] == 0x4C && data[2] == 0x08 {
+        return IncomingCommand::QiYiSetState;
     }
+    IncomingCommand::Unknown
+}
+
+/// Decode a QiYi wire facelet block (27 bytes) into a `CubeState`.
+/// Wire format: each byte low-nibble first; face order URFDLB; color nibble
+/// `{U:3, R:1, F:4, D:2, L:0, B:5}` (inverse of `build_facelets_qiyi`'s REMAP).
+pub fn decode_facelets_qiyi(wire: &[u8]) -> CubeState {
+    const INVMAP: [u8; 6] = [4, 1, 3, 0, 2, 5]; // wire nibble -> internal URFDLB code
+    let mut f = [0u8; 54];
+    for i in 0..27 {
+        let b = wire.get(i).copied().unwrap_or(0);
+        let lo = (b & 0x0F) as usize;
+        let hi = ((b >> 4) & 0x0F) as usize;
+        f[i * 2] = INVMAP.get(lo).copied().unwrap_or(0);
+        f[i * 2 + 1] = INVMAP.get(hi).copied().unwrap_or(0);
+    }
+    decode_facelets(f)
 }
 
 // ==================== Robot ====================

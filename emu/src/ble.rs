@@ -448,6 +448,31 @@ pub async fn run(
                 return;
             }
 
+            // QiYi (Smart Player Pro): the App writes AES-128-ECB encrypted raw
+            // content (no `FE` framing). Decrypt the WHOLE packet, then dispatch.
+            //   * `FE 09 <role> ...`                     -> App ACK; IGNORE (no reply).
+            //   * `FC 4C 08 <ts:4 LE> <facelets:27> <crc>` -> set state / reset.
+            //   * `FC 2A ...` bind / `BA 12 ...` query   -> ignore for now.
+            if proto_cl == Protocol::QiYi {
+                let mut buf = data.to_vec();
+                crypto::aes_ecb_decrypt(&mut buf, &key_cl);
+                log::info!("QiYi CMD raw {}B decrypted: {:02X?}", buf.len(), &buf);
+                if buf.len() >= 34 && buf[0] == 0xFC && buf[1] == 0x4C && buf[2] == 0x08 {
+                    let st = protocol::decode_facelets_qiyi(&buf[7..34]);
+                    *cube_state_cl.lock().unwrap() = st;
+                    let serial = *shared_serial_cl.lock().unwrap();
+                    let cs = cube_state_cl.lock().unwrap();
+                    let mut msg = protocol::build_facelets(proto_cl, serial, &cs);
+                    drop(cs);
+                    ble_encrypt(proto_cl, &mut msg, &key_cl, &iv_cl);
+                    send_queue_cmd.lock().unwrap().push_back(msg);
+                    log::info!("QiYi set-state applied; replied hello");
+                } else {
+                    log::info!("QiYi CMD (ack/bind/query) ignored");
+                }
+                return;
+            }
+
             // Timer 协议: 无加密, CRC16, 命令/响应
             if proto_cl == Protocol::Timer {
                 let cmd = protocol::parse_timer_command(data);
@@ -631,6 +656,9 @@ pub async fn run(
                         state_char.set_value(&msg).notify();
                     }
                 }
+                protocol::IncomingCommand::QiYiSetState => {
+                    // handled by the dedicated QiYi branch above
+                }
                 protocol::IncomingCommand::Unknown => {
                     log::warn!("CMD unhandled: {:02X?}", &buf);
                 }
@@ -793,7 +821,15 @@ pub async fn run(
                 .as_millis()
                 .min(u32::MAX as u64) as u32;
 
-            let mut move_msg = protocol::build_move(current_proto, serial, &history, cube_time);
+            let mut move_msg = if current_proto == Protocol::QiYi {
+                // 0x03 state-change frame carries the current facelets.
+                let cs = cube_state_loop.lock().unwrap();
+                let payload = protocol::build_move_qiyi(serial, &cs, &history);
+                drop(cs);
+                protocol::qiyi_frame(&payload)
+            } else {
+                protocol::build_move(current_proto, serial, &history, cube_time)
+            };
             ble_encrypt(current_proto, &mut move_msg, &key_loop, &iv_loop);
             if *connected_loop.lock().unwrap() {
                 send_queue_loop.lock().unwrap().push_back(move_msg);
@@ -807,7 +843,10 @@ pub async fn run(
             // which its in-match timer handlers treat as "reset state" and
             // restart the scramble/timer (checkpart.AgainView()). Moves travel
             // on 165; 163 is only sent on subscribe (initial) and on request.
-            if current_proto != Protocol::MoYu32 {
+            //
+            // QiYi: the 0x03 move frame already carries the facelets, and an extra
+            // 0x02 frame makes the App re-render (flash) and re-ACK in a loop.
+            if current_proto != Protocol::MoYu32 && current_proto != Protocol::QiYi {
                 let cs = cube_state_loop.lock().unwrap();
                 let mut facelets_msg = protocol::build_facelets(current_proto, serial, &cs);
                 drop(cs);
