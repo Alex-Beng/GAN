@@ -1073,7 +1073,10 @@ pub fn build_move_qiyi(now_ms: u32, state: &CubeState, history: &[(u8, u8, u16)]
 
     let mut c = vec![0u8; 92];
     c[0] = 0x03;
-    c[1..5].copy_from_slice(&now_ms.to_be_bytes());
+    // The App converts device timestamps to ms as `ticks * 0.625` (i.e. the real
+    // cube counts 1.6 ticks per millisecond). So we must report ticks, not ms.
+    let ms_to_ticks = |ms: u32| -> u32 { ((ms as u64 * 8) / 5) as u32 };
+    c[1..5].copy_from_slice(&ms_to_ticks(now_ms).to_be_bytes());
     // Current facelets (27 bytes, wire order/encoding) at content[5..32).
     let packed = pack_facelets_nibble(&build_facelets_qiyi(state));
     for (i, b) in packed.iter().take(27).enumerate() {
@@ -1084,15 +1087,15 @@ pub fn build_move_qiyi(now_ms: u32, state: &CubeState, history: &[(u8, u8, u16)]
     }
     c[33] = 80; // battery (data[35])
     // History: newest first at content[84], then 79, 74, ... Timestamps are
-    // absolute device ms (big-endian); step back by each entry's gap going older.
+    // absolute device ticks (big-endian); step back by each entry's gap going older.
     let mut off: i32 = 84;
-    let mut t: i64 = now_ms as i64;
+    let mut t_ms: i64 = now_ms as i64;
     for &(face, dir, elapsed) in history.iter() {
         if off < 34 { break; }
         let o = off as usize;
-        c[o..o + 4].copy_from_slice(&(t as u32).to_be_bytes());
+        c[o..o + 4].copy_from_slice(&ms_to_ticks(t_ms.max(0) as u32).to_be_bytes());
         c[o + 4] = encode(face, dir);
-        t -= elapsed as i64;
+        t_ms -= elapsed as i64;
         off -= 5;
     }
     c
