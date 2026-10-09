@@ -85,7 +85,12 @@ fn main() {
         let ble_device = BLEDevice::take();
 
         // Peripheral: advertise the virtual cube in the configured protocol.
+        // The own-address type MUST be Public so the advertised BLE address
+        // equals the MAC we advertise in manufacturer data (and use for crypto
+        // key derivation). The app derives its key from that MAC, so all three
+        // must match (same as emu).
         let mac = *shared::device_config::get_config(out).mac;
+        ble_device.set_own_addr_type(esp32_nimble::enums::OwnAddrType::Public);
         // Set the BT MAC to the protocol's advertised MAC (real GAN cubes are
         // identified by it; matches emu behaviour).
         unsafe {

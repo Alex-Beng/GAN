@@ -49,6 +49,7 @@ class Proxy:
         self.args = args
         self.http = None
         self.logger = None
+        self.viz = None
         self._move_buffer: list[dict] = []
         self._debounce_timer = 0.0
         self._running = False
@@ -67,9 +68,13 @@ class Proxy:
                 print(f"[{_format_ts()}] 面片: {event.facelets}")
             if self.logger:
                 self.logger.log_facelets(event.facelets)
+            if self.viz:
+                self.viz.set_facelets(event.facelets)
         elif isinstance(event, GyroEvent):
             if self.logger:
                 self.logger.log_gyro(event.x, event.y, event.z, event.w)
+            if self.viz:
+                self.viz.set_quat(event.x, event.y, event.z, event.w)
         elif isinstance(event, BatteryEvent):
             if self.args.verbose:
                 print(f"[{_format_ts()}] 电量: {event.percent}%")
@@ -101,6 +106,16 @@ class Proxy:
         if self.args.csv:
             from proxy.logger import ProxyLogger
             self.logger = ProxyLogger()
+
+        if self.args.viz:
+            try:
+                from proxy.viz import VizWindow
+                self.viz = VizWindow()
+                self.viz.start()
+                print(f"[{_format_ts()}] 3D 朝向窗口已开启 (q/ESC 关闭, ←/→ 旋转视角)")
+            except ImportError:
+                print(f"[{_format_ts()}] 无法开启 --viz：缺少 opencv-python/numpy "
+                      "(pip install -r scripts/requirements-proxy.txt)")
 
         device = None
         if self.args.address:
@@ -143,6 +158,8 @@ class Proxy:
                 self.http.close()
             if self.logger:
                 self.logger.close()
+            if self.viz:
+                self.viz.stop()
 
 
 async def _do_scan(source: str, timeout: float) -> None:
@@ -169,6 +186,7 @@ def main() -> None:
     parser.add_argument("--scan-timeout", type=float, default=8.0, help="扫描超时秒数")
     parser.add_argument("--scan", action="store_true", help="仅扫描列出设备")
     parser.add_argument("--csv", action="store_true", help="启用 CSV 落盘 (默认关闭)")
+    parser.add_argument("--viz", action="store_true", help="打开 3D 魔方朝向窗口 (需 opencv-python/numpy；GAN V3 无陀螺仪)")
     parser.add_argument("--verbose", action="store_true", help="显示面片/电量等调试信息")
     args = parser.parse_args()
 

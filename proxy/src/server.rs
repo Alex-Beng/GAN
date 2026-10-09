@@ -128,7 +128,7 @@ impl VirtualCube {
                 let mut buf = data[..min].to_vec();
                 decrypt(proto, &mut buf, &key_c, &iv_c);
                 let cmd = protocol::parse_command_type(proto, &buf);
-                log::info!("[server] CMD {:?}", cmd);
+                log::info!("[server] CMD {:?}, decrypted: {:02X?}", cmd, &buf);
                 match cmd {
                     protocol::IncomingCommand::Facelets => {
                         let cs = state_cmd.lock().unwrap();
