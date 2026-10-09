@@ -1,4 +1,6 @@
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 
 use embassy_time::{Duration, Timer};
@@ -11,8 +13,9 @@ use shared::device_config::{self, Protocol};
 use crate::http::{MOVE_FACE_DELAY, MOVE_FACE_DISCONNECT, MOVE_FACE_TIME};
 use shared::protocol;
 
-/// Queue of already-encrypted frames awaiting a single sender task.
-type SendQueue = Arc<Mutex<VecDeque<Vec<u8>>>>;
+/// Sender end of the notification channel. Bounded so a producer that floods
+/// (e.g. a burst of moves) cannot grow memory without limit.
+type SendQueue = SyncSender<Vec<u8>>;
 
 /// Producer handle used by callbacks / the move loop. It only enqueues bytes;
 /// the actual `set_value().notify()` is done by one dedicated sender task, so
@@ -20,18 +23,26 @@ type SendQueue = Arc<Mutex<VecDeque<Vec<u8>>>>;
 /// characteristic mutex with the sender (avoids the QiYi/Timer deadlock where
 /// write and notify share one characteristic).
 struct SendHandle {
-    q: SendQueue,
+    tx: SendQueue,
 }
 
 impl SendHandle {
-    fn new(q: &SendQueue) -> Self {
-        Self { q: q.clone() }
+    fn new(tx: &SendQueue) -> Self {
+        Self { tx: tx.clone() }
     }
     fn set_value(&mut self, value: &[u8]) -> &mut Self {
-        self.q.lock().unwrap().push_back(value.to_vec());
+        // Non-blocking: drops the frame if the channel is full rather than
+        // stalling the caller (which may be the NimBLE host task).
+        let _ = self.tx.try_send(value.to_vec());
         self
     }
     fn notify(&mut self) {}
+}
+
+/// Poison-tolerant lock: a panic while another thread held the mutex must not
+/// cascade into a panic storm here.
+fn lock_mutex<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn ble_encrypt(proto: Protocol, data: &mut Vec<u8>, key: &[u8; 16], iv: &[u8; 16]) {
@@ -104,8 +115,13 @@ pub async fn run(
         // Set when a command (bind / name change) requires a BLE re-advertise.
         let need_restart = Arc::new(Mutex::new(false));
         let need_restart_cmd = need_restart.clone();
-        // Single producer->sender queue for all notifications (see SendHandle).
-        let send_queue: SendQueue = Arc::new(Mutex::new(VecDeque::new()));
+        // Single producer->sender channel for all notifications (see SendHandle).
+        // Bounded to cap memory if a producer floods the queue.
+        let (send_queue, send_rx): (SendQueue, Receiver<Vec<u8>>) =
+            std::sync::mpsc::sync_channel(64);
+        // Signals the sender task to exit when this BLE session is torn down
+        // (protocol switch / re-advertise) so threads do not leak.
+        let sender_stop = Arc::new(AtomicBool::new(false));
 
         server.on_connect(move |_server, _desc| {
             log::info!("Client connected");
@@ -287,19 +303,24 @@ pub async fn run(
         // notify(). Callbacks only enqueue (see SendHandle), so a write callback
         // can never deadlock against a notification in flight.
         {
-            let sq = send_queue.clone();
             let sc = state_char.clone();
             let conn = connected.clone();
+            let stop = sender_stop.clone();
             std::thread::spawn(move || loop {
-                let item = sq.lock().unwrap().pop_front();
-                match item {
-                    Some(bytes) => {
-                        if *conn.lock().unwrap() {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                // Block until a frame arrives (or 100ms timeout so we can poll
+                // `stop`). Never busy-spins, so IDLE still feeds the task WDT.
+                match send_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                    Ok(bytes) => {
+                        if *lock_mutex(&conn) {
                             let mut c = sc.lock();
                             c.set_value(&bytes).notify();
                         }
                     }
-                    None => std::thread::sleep(std::time::Duration::from_millis(10)),
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => break,
                 }
             });
         }
@@ -316,14 +337,14 @@ pub async fn run(
             if proto_sub == Protocol::Robot {
                 let msg = protocol::build_robot_info(protocol::RobotInfoType::Model);
                 log::info!("Sending initial ROBOT MODEL: {:02X?}", &msg);
-                send_queue_sub.lock().unwrap().push_back(msg);
+                let _ = send_queue_sub.try_send(msg);
                 let msg2 = protocol::build_robot_info(protocol::RobotInfoType::Version);
                 log::info!("Sending initial ROBOT VERSION: {:02X?}", &msg2);
-                send_queue_sub.lock().unwrap().push_back(msg2);
+                let _ = send_queue_sub.try_send(msg2);
             } else if proto_sub == Protocol::Timer {
                 let msg = protocol::build_timer_status(protocol::TimerStatus::Idle);
                 log::info!("Sending initial TIMER STATUS: {:02X?}", &msg);
-                send_queue_sub.lock().unwrap().push_back(msg);
+                let _ = send_queue_sub.try_send(msg);
             } else {
                 let serial = *shared_serial_sub.lock().unwrap();
                 let cs = cube_state_sub.lock().unwrap();
@@ -331,7 +352,7 @@ pub async fn run(
                 drop(cs);
                 ble_encrypt(proto_sub, &mut msg, &key_sub, &iv_sub);
                 log::info!("Sending initial FACELETS: {:02X?}", &msg);
-                send_queue_sub.lock().unwrap().push_back(msg);
+                let _ = send_queue_sub.try_send(msg);
             }
         });
 
@@ -465,7 +486,7 @@ pub async fn run(
                     let mut msg = protocol::build_facelets(proto_cl, serial, &cs);
                     drop(cs);
                     ble_encrypt(proto_cl, &mut msg, &key_cl, &iv_cl);
-                    send_queue_cmd.lock().unwrap().push_back(msg);
+                    let _ = send_queue_cmd.try_send(msg);
                     log::info!("QiYi set-state applied; replied hello");
                 } else {
                     log::info!("QiYi CMD (ack/bind/query) ignored");
@@ -764,7 +785,7 @@ pub async fn run(
                     let mut msg = protocol::build_disconnect_moyu32();
                     ble_encrypt(proto, &mut msg, &key_loop, &iv_loop);
                     if *connected_loop.lock().unwrap() {
-                        send_queue_loop.lock().unwrap().push_back(msg);
+                        let _ = send_queue_loop.try_send(msg);
                     }
                 }
                 log::info!("BLE disconnect notification sent");
@@ -833,7 +854,7 @@ pub async fn run(
             };
             ble_encrypt(current_proto, &mut move_msg, &key_loop, &iv_loop);
             if *connected_loop.lock().unwrap() {
-                send_queue_loop.lock().unwrap().push_back(move_msg);
+                let _ = send_queue_loop.try_send(move_msg);
             }
 
             let delay = (*move_delay_ms.lock().unwrap()).max(1);
@@ -853,7 +874,7 @@ pub async fn run(
                 drop(cs);
                 ble_encrypt(current_proto, &mut facelets_msg, &key_loop, &iv_loop);
                 if *connected_loop.lock().unwrap() {
-                    send_queue_loop.lock().unwrap().push_back(facelets_msg);
+                    let _ = send_queue_loop.try_send(facelets_msg);
                 }
             }
         }
@@ -864,6 +885,9 @@ pub async fn run(
         // only safe way to switch protocol + MAC: NVS holds the new protocol,
         // and the fresh session sets the MAC at startup.
         log::info!("Restarting device for protocol switch");
+        // Let this session's sender task exit before tearing down BLE so the
+        // thread does not leak across restarts.
+        sender_stop.store(true, Ordering::Relaxed);
         Timer::after(Duration::from_millis(500)).await;
         unsafe {
             esp_idf_svc::sys::esp_restart();
