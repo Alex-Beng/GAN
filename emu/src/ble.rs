@@ -9,7 +9,7 @@ use esp32_nimble::{BLEDevice, NimbleProperties};
 
 use shared::crypto;
 use shared::device_config::{self, Protocol};
-use crate::http::{MOVE_FACE_DELAY, MOVE_FACE_DISCONNECT, MOVE_FACE_TIME};
+use crate::http::{MoveProgress, MOVE_FACE_DELAY, MOVE_FACE_DISCONNECT, MOVE_FACE_TIME};
 use shared::protocol;
 
 /// Shared notification queue (already-encrypted frames awaiting a single
@@ -89,6 +89,7 @@ pub async fn run(
     cube_name: Arc<Mutex<String>>,
     gyro_open: Arc<Mutex<bool>>,
     nvs: esp_idf_svc::nvs::EspDefaultNvsPartition,
+    move_progress: MoveProgress,
 ) {
     loop {
         let proto = *active_proto.lock().unwrap();
@@ -803,11 +804,24 @@ pub async fn run(
                 continue;
             };
 
+            // One queued entry has now been consumed by the move loop; tick the
+            // shared progress counter and wake any `/api/moves?wait=1` waiter.
+            // Notify on every decrement (not just on reaching 0): a waiter may
+            // be waiting for the counter to drop to its own baseline, which can
+            // be > 0 when earlier entries were still pending.
+            let mark_done = |prog: &MoveProgress| {
+                let mut pending = lock_mutex(&prog.0);
+                if *pending > 0 {
+                    *pending -= 1;
+                }
+                prog.1.notify_all();
+            };
 
             if face == MOVE_FACE_TIME {
                 let ms = dir as u64 * 10;
                 log::info!("BLE time sleep {}ms", ms);
                 Timer::after(Duration::from_millis(ms)).await;
+                mark_done(&move_progress);
                 continue;
             }
 
@@ -821,6 +835,7 @@ pub async fn run(
                     }
                 }
                 log::info!("BLE disconnect notification sent");
+                mark_done(&move_progress);
                 continue;
             }
 
@@ -828,17 +843,20 @@ pub async fn run(
                 let delay = dir as u64;
                 *move_delay_ms.lock().unwrap() = delay;
                 log::info!("BLE delay set to {}ms", delay);
+                mark_done(&move_progress);
                 continue;
             }
 
             let current_proto = *active_proto.lock().unwrap();
             if current_proto != proto {
                 log::info!("Protocol changed {:?} -> {:?}, restarting BLE", proto, current_proto);
+                mark_done(&move_progress);
                 break;
             }
 
             if current_proto == Protocol::Gan251 && face > 2 {
                 log::info!("GAN251 ignoring {}/{} (only RUF supported)", face, dir);
+                mark_done(&move_progress);
                 continue;
             }
 
@@ -909,6 +927,8 @@ pub async fn run(
                     send_queue_loop.push(facelets_msg);
                 }
             }
+
+            mark_done(&move_progress);
         }
 
         // esp32-nimble 0.12: deinit_full() resets advertising AFTER the host

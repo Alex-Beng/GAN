@@ -120,11 +120,16 @@ fn main() {
     let queue: Arc<Mutex<VecDeque<(u8, u8)>>> = Arc::new(Mutex::new(VecDeque::new()));
     let cube_state: Arc<Mutex<shared::protocol::CubeState>> = Arc::new(Mutex::new(shared::protocol::CubeState::solved()));
     let move_delay_ms: Arc<Mutex<u64>> = Arc::new(Mutex::new(http::load_move_delay(&nvs)));
+    // Number of queued (but not yet played) move-loop entries. `/api/moves?wait=1`
+    // waits until this returns to its pre-request value, i.e. the whole batch has
+    // been played by the BLE move loop.
+    let move_progress: http::MoveProgress = Arc::new((Mutex::new(0usize), std::sync::Condvar::new()));
 
     let _wifi = shared::wifi::start_wifi(peripherals.modem, sys_loop, nvs.clone()).unwrap();
     let _server = http::start_http_server(
         queue.clone(), _wifi.clone(), nvs.clone(),
         cube_state.clone(), move_delay_ms.clone(), protocol.clone(),
+        move_progress.clone(),
     ).unwrap();
     serial::run_serial(queue.clone(), cube_state.clone());
     shared::wifi::sta_reconnect_loop(_wifi.clone(), nvs.clone());
@@ -136,6 +141,7 @@ fn main() {
     let ble_handle = std::thread::spawn(move || {
         esp_idf_svc::hal::task::block_on(ble::run(
             queue, cube_state, move_delay_ms, protocol, account, cube_name, gyro_open, nvs,
+            move_progress,
         ));
     });
 

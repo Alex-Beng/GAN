@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 use esp_idf_svc::http::server::EspHttpServer;
 use esp_idf_svc::http::Method;
@@ -14,6 +14,11 @@ use shared::wifi::SharedWifi;
 const NVS_NS_HTTP: &str = "http_cfg";
 const NVS_KEY_DELAY: &str = "move_delay";
 const DEFAULT_DELAY_MS: u64 = 50;
+
+/// Shared "queued but not yet played" counter + condition variable. The BLE
+/// move loop decrements it as it consumes each queue entry; `/api/moves?wait=1`
+/// waits on it until the batch it just enqueued has been fully played.
+pub type MoveProgress = Arc<(Mutex<usize>, Condvar)>;
 
 pub const MOVE_FACE_DELAY: u8 = 99;
 pub const MOVE_FACE_TIME: u8 = 100;
@@ -104,6 +109,7 @@ pub fn start_http_server(
     cube_state: Arc<Mutex<protocol::CubeState>>,
     move_delay_ms: Arc<Mutex<u64>>,
     protocol: Arc<Mutex<Protocol>>,
+    move_progress: MoveProgress,
 ) -> anyhow::Result<EspHttpServer<'static>> {
     // Shared web UI + WiFi + protocol + device/state endpoints.
     let nvs_cb = nvs.clone();
@@ -190,7 +196,11 @@ pub fn start_http_server(
     })?;
 
     let queue2 = queue.clone();
+    let progress2 = move_progress.clone();
+    let delay_ref_moves = move_delay_ms.clone();
     server.fn_handler("/api/moves", Method::Post, move |mut req| {
+        // Optional `?wait=1`: block until the whole batch has been played.
+        let want_wait = req.uri().contains("wait=1");
         let mut body = Vec::new();
         let mut buf = [0u8; 512];
         loop {
@@ -203,7 +213,20 @@ pub fn start_http_server(
                 }
             }
         }
-        log::info!("/api/moves body {} bytes", body.len());
+        log::info!("/api/moves body {} bytes (wait={})", body.len(), want_wait);
+
+        // Hold the progress lock across the whole "record baseline + enqueue +
+        // wait" sequence. This is essential: if the lock were released between
+        // the last enqueue and entering the wait, the BLE move loop could
+        // finish the batch and call notify_all() before we start waiting, and
+        // the wakeup would be lost (the request would then only return on the
+        // timeout). Condvar::wait_timeout releases the mutex while waiting.
+        let mut pending = progress2
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let baseline = *pending;
+        let mut enqueued: usize = 0;
 
         let resp_text = if let Ok(s) = std::str::from_utf8(&body) {
             let mut results = Vec::new();
@@ -224,9 +247,13 @@ pub fn start_http_server(
                             if d == 2 {
                                 queue2.lock().unwrap().push_back((f, 0));
                                 queue2.lock().unwrap().push_back((f, 0));
+                                enqueued += 2;
+                                *pending += 2;
                                 results.push(std::format!("{}2", names[f as usize]));
                             } else {
                                 queue2.lock().unwrap().push_back((f, d));
+                                enqueued += 1;
+                                *pending += 1;
                                 let dir_str = if d == 0 { "" } else { "'" };
                                 results.push(std::format!("{}{}", names[f as usize], dir_str));
                             }
@@ -238,6 +265,8 @@ pub fn start_http_server(
                             let ticks = (ms as u16 + 5) / 10;
                             let d = ticks.min(255) as u8;
                             queue2.lock().unwrap().push_back((MOVE_FACE_TIME, d));
+                            enqueued += 1;
+                                *pending += 1;
                             results.push(std::format!("time={}", ms));
                         } else {
                             results.push("bad request".to_string());
@@ -245,6 +274,8 @@ pub fn start_http_server(
                     } else if let Some(ms) = delay {
                         if ms > 0 {
                             queue2.lock().unwrap().push_back((MOVE_FACE_DELAY, ms));
+                            enqueued += 1;
+                                *pending += 1;
                             results.push(std::format!("delay={}", ms));
                         } else {
                             results.push("bad request".to_string());
@@ -256,9 +287,13 @@ pub fn start_http_server(
                                 if d == 2 {
                                     queue2.lock().unwrap().push_back((f, 0));
                                     queue2.lock().unwrap().push_back((f, 0));
+                                    enqueued += 2;
+                                *pending += 2;
                                     results.push(std::format!("{}2", names[f as usize]));
                                 } else {
                                     queue2.lock().unwrap().push_back((f, d));
+                                    enqueued += 1;
+                                *pending += 1;
                                     let dir_str = if d == 0 { "" } else { "'" };
                                     results.push(std::format!("{}{}", names[f as usize], dir_str));
                                 }
@@ -284,6 +319,33 @@ pub fn start_http_server(
         } else {
             "bad request".to_string()
         };
+
+        // `pending` (the progress lock) has been held since before the batch
+        // was enqueued, so no wakeup can be lost. Wait for the BLE move loop to
+        // play the whole batch (counter back to `baseline`).
+        if enqueued > 0 && want_wait {
+            let per_move_ms = (*delay_ref_moves.lock().unwrap()).max(1);
+            // Upper bound: batch play time + generous margin.
+            let timeout =
+                std::time::Duration::from_millis(enqueued as u64 * per_move_ms + 5000);
+            let deadline = std::time::Instant::now() + timeout;
+            while *pending > baseline {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    log::warn!(
+                        "/api/moves?wait=1 timed out: pending={} baseline={}",
+                        *pending, baseline
+                    );
+                    break;
+                }
+                let (guard, _) = progress2
+                    .1
+                    .wait_timeout(pending, deadline - now)
+                    .unwrap_or_else(|e| e.into_inner());
+                pending = guard;
+            }
+        }
+        drop(pending);
 
         log::info!("/api/moves resp: {}", resp_text);
 
