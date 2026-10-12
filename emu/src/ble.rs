@@ -1,6 +1,5 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 
 use embassy_time::{Duration, Timer};
@@ -13,27 +12,54 @@ use shared::device_config::{self, Protocol};
 use crate::http::{MOVE_FACE_DELAY, MOVE_FACE_DISCONNECT, MOVE_FACE_TIME};
 use shared::protocol;
 
-/// Sender end of the notification channel. Bounded so a producer that floods
-/// (e.g. a burst of moves) cannot grow memory without limit.
-type SendQueue = SyncSender<Vec<u8>>;
+/// Shared notification queue (already-encrypted frames awaiting a single
+/// sender thread). Bounded so a producer that floods (e.g. a burst of moves)
+/// cannot grow memory without limit.
+///
+/// Deliberately a plain `Mutex<VecDeque>` polled by the sender with a real
+/// `thread::sleep` instead of `std::sync::mpsc` / a `Condvar`: on this target
+/// (single-core ESP32-C3, nightly std where `mpsc` is built on `sync::mpmc`)
+/// the mpmc parking path could leave the priority-5 sender thread runnable and
+/// starve the move loop. A sleep is always a genuine `vTaskDelay`, so the
+/// sender can never spin.
+struct SendQueue {
+    q: Mutex<VecDeque<Vec<u8>>>,
+    max: usize,
+}
+
+impl SendQueue {
+    fn new(max: usize) -> Self {
+        Self { q: Mutex::new(VecDeque::new()), max }
+    }
+    /// Non-blocking push; drops the frame when full rather than stalling the
+    /// caller (which may be the NimBLE host task or the move loop).
+    fn push(&self, value: Vec<u8>) {
+        let mut q = lock_mutex(&self.q);
+        if q.len() >= self.max {
+            return;
+        }
+        q.push_back(value);
+    }
+    fn pop(&self) -> Option<Vec<u8>> {
+        lock_mutex(&self.q).pop_front()
+    }
+}
 
 /// Producer handle used by callbacks / the move loop. It only enqueues bytes;
-/// the actual `set_value().notify()` is done by one dedicated sender task, so
+/// the actual `set_value().notify()` is done by one dedicated sender thread, so
 /// callbacks (which run on the NimBLE host task) never contend for the
 /// characteristic mutex with the sender (avoids the QiYi/Timer deadlock where
 /// write and notify share one characteristic).
 struct SendHandle {
-    tx: SendQueue,
+    q: Arc<SendQueue>,
 }
 
 impl SendHandle {
-    fn new(tx: &SendQueue) -> Self {
-        Self { tx: tx.clone() }
+    fn new(q: &Arc<SendQueue>) -> Self {
+        Self { q: q.clone() }
     }
     fn set_value(&mut self, value: &[u8]) -> &mut Self {
-        // Non-blocking: drops the frame if the channel is full rather than
-        // stalling the caller (which may be the NimBLE host task).
-        let _ = self.tx.try_send(value.to_vec());
+        self.q.push(value.to_vec());
         self
     }
     fn notify(&mut self) {}
@@ -115,10 +141,9 @@ pub async fn run(
         // Set when a command (bind / name change) requires a BLE re-advertise.
         let need_restart = Arc::new(Mutex::new(false));
         let need_restart_cmd = need_restart.clone();
-        // Single producer->sender channel for all notifications (see SendHandle).
+        // Single producer->sender queue for all notifications (see SendHandle).
         // Bounded to cap memory if a producer floods the queue.
-        let (send_queue, send_rx): (SendQueue, Receiver<Vec<u8>>) =
-            std::sync::mpsc::sync_channel(64);
+        let send_queue: Arc<SendQueue> = Arc::new(SendQueue::new(64));
         // Signals the sender task to exit when this BLE session is torn down
         // (protocol switch / re-advertise) so threads do not leak.
         let sender_stop = Arc::new(AtomicBool::new(false));
@@ -299,10 +324,11 @@ pub async fn run(
 
         *state_char_ref.lock().unwrap() = Some(state_char.clone());
 
-        // Dedicated sender task: the ONLY place that locks `state_char` and calls
-        // notify(). Callbacks only enqueue (see SendHandle), so a write callback
-        // can never deadlock against a notification in flight.
+        // Dedicated sender thread: the ONLY place that locks `state_char` and
+        // calls notify(). Callbacks only enqueue (see SendHandle), so a write
+        // callback can never deadlock against a notification in flight.
         {
+            let sq = send_queue.clone();
             let sc = state_char.clone();
             let conn = connected.clone();
             let stop = sender_stop.clone();
@@ -310,17 +336,22 @@ pub async fn run(
                 if stop.load(Ordering::Relaxed) {
                     break;
                 }
-                // Block until a frame arrives (or 100ms timeout so we can poll
-                // `stop`). Never busy-spins, so IDLE still feeds the task WDT.
-                match send_rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                    Ok(bytes) => {
+                match sq.pop() {
+                    Some(bytes) => {
                         if *lock_mutex(&conn) {
                             let mut c = sc.lock();
                             c.set_value(&bytes).notify();
                         }
                     }
-                    Err(RecvTimeoutError::Timeout) => {}
-                    Err(RecvTimeoutError::Disconnected) => break,
+                    None => {
+                        // Idle sleep MUST be >= one FreeRTOS tick
+                        // (CONFIG_FREERTOS_HZ=100 -> 10ms). With a sub-tick
+                        // delay, ESP-IDF's `usleep` takes the busy-wait branch
+                        // (`esp_rom_delay_us`) instead of `vTaskDelay`, so the
+                        // priority-5 sender thread would never yield and starve
+                        // IDLE (task WDT). 10ms guarantees a real vTaskDelay.
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
                 }
             });
         }
@@ -337,14 +368,14 @@ pub async fn run(
             if proto_sub == Protocol::Robot {
                 let msg = protocol::build_robot_info(protocol::RobotInfoType::Model);
                 log::info!("Sending initial ROBOT MODEL: {:02X?}", &msg);
-                let _ = send_queue_sub.try_send(msg);
+                send_queue_sub.push(msg);
                 let msg2 = protocol::build_robot_info(protocol::RobotInfoType::Version);
                 log::info!("Sending initial ROBOT VERSION: {:02X?}", &msg2);
-                let _ = send_queue_sub.try_send(msg2);
+                send_queue_sub.push(msg2);
             } else if proto_sub == Protocol::Timer {
                 let msg = protocol::build_timer_status(protocol::TimerStatus::Idle);
                 log::info!("Sending initial TIMER STATUS: {:02X?}", &msg);
-                let _ = send_queue_sub.try_send(msg);
+                send_queue_sub.push(msg);
             } else {
                 let serial = *shared_serial_sub.lock().unwrap();
                 let cs = cube_state_sub.lock().unwrap();
@@ -352,7 +383,7 @@ pub async fn run(
                 drop(cs);
                 ble_encrypt(proto_sub, &mut msg, &key_sub, &iv_sub);
                 log::info!("Sending initial FACELETS: {:02X?}", &msg);
-                let _ = send_queue_sub.try_send(msg);
+                send_queue_sub.push(msg);
             }
         });
 
@@ -486,7 +517,7 @@ pub async fn run(
                     let mut msg = protocol::build_facelets(proto_cl, serial, &cs);
                     drop(cs);
                     ble_encrypt(proto_cl, &mut msg, &key_cl, &iv_cl);
-                    let _ = send_queue_cmd.try_send(msg);
+                    send_queue_cmd.push(msg);
                     log::info!("QiYi set-state applied; replied hello");
                 } else {
                     log::info!("QiYi CMD (ack/bind/query) ignored");
@@ -772,6 +803,7 @@ pub async fn run(
                 continue;
             };
 
+
             if face == MOVE_FACE_TIME {
                 let ms = dir as u64 * 10;
                 log::info!("BLE time sleep {}ms", ms);
@@ -785,7 +817,7 @@ pub async fn run(
                     let mut msg = protocol::build_disconnect_moyu32();
                     ble_encrypt(proto, &mut msg, &key_loop, &iv_loop);
                     if *connected_loop.lock().unwrap() {
-                        let _ = send_queue_loop.try_send(msg);
+                        send_queue_loop.push(msg);
                     }
                 }
                 log::info!("BLE disconnect notification sent");
@@ -854,7 +886,7 @@ pub async fn run(
             };
             ble_encrypt(current_proto, &mut move_msg, &key_loop, &iv_loop);
             if *connected_loop.lock().unwrap() {
-                let _ = send_queue_loop.try_send(move_msg);
+                send_queue_loop.push(move_msg);
             }
 
             let delay = (*move_delay_ms.lock().unwrap()).max(1);
@@ -874,7 +906,7 @@ pub async fn run(
                 drop(cs);
                 ble_encrypt(current_proto, &mut facelets_msg, &key_loop, &iv_loop);
                 if *connected_loop.lock().unwrap() {
-                    let _ = send_queue_loop.try_send(facelets_msg);
+                    send_queue_loop.push(facelets_msg);
                 }
             }
         }

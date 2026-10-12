@@ -129,7 +129,17 @@ fn main() {
     serial::run_serial(queue.clone(), cube_state.clone());
     shared::wifi::sta_reconnect_loop(_wifi.clone(), nvs.clone());
 
-    esp_idf_svc::hal::task::block_on(ble::run(
-        queue, cube_state, move_delay_ms, protocol, account, cube_name, gyro_open, nvs,
-    ));
+    // The move loop must not run on the priority-1 main task: on this single
+    // core, the priority-5 httpd / BLE sender threads would starve it whenever
+    // one of them is runnable, so moves would pile up and never be notified.
+    // Run it on its own priority-5 thread (ESP-IDF pthread default) instead.
+    let ble_handle = std::thread::spawn(move || {
+        esp_idf_svc::hal::task::block_on(ble::run(
+            queue, cube_state, move_delay_ms, protocol, account, cube_name, gyro_open, nvs,
+        ));
+    });
+
+    // Keep the main task alive; ble::run only returns on a protocol-switch
+    // restart (which calls esp_restart()), so this effectively never joins.
+    let _ = ble_handle.join();
 }
