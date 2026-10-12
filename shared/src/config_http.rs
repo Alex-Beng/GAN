@@ -7,7 +7,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use esp_idf_svc::http::server::{Configuration, EspHttpServer};
+use esp_idf_svc::handle::RawHandle;
+use esp_idf_svc::http::server::{Configuration, EspHttpConnection, EspHttpServer};
 use esp_idf_svc::http::Method;
 use esp_idf_svc::io::Write;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
@@ -17,6 +18,63 @@ use crate::protocol::{self, CubeState};
 use crate::wifi::{self, SharedWifi};
 
 static INDEX_HTML: &str = include_str!("index.html");
+
+/// Restore the per-connection socket timeouts to ESP-IDF's httpd default.
+///
+/// ESP-IDF's httpd sets `SO_RCVTIMEO` / `SO_SNDTIMEO` from `recv_wait_timeout`
+/// / `send_wait_timeout` (5s via esp-idf-svc) when the connection is accepted.
+/// Those values must NOT be shortened:
+/// - A shorter `SO_RCVTIMEO` makes httpd hit `HTTPD_SOCK_ERR_TIMEOUT` on an
+///   *idle* keep-alive connection, which triggers `httpd_req_handle_err(408)`
+///   and injects a spurious "408 Request Timeout" onto a connection that a
+///   client (e.g. aiohttp's keep-alive pool) is about to reuse, corrupting the
+///   request/response exchange.
+/// - A too-short `SO_SNDTIMEO` aborts otherwise valid responses when the client
+///   is momentarily slow to read.
+///
+/// Kept as a callable so the intent (and future tuning) lives in one place; it
+/// now only re-asserts the default 5s in case a previous session left a smaller
+/// value on a recycled socket.
+///
+/// Best-effort: any failure is logged and ignored.
+pub fn tune_socket_timeouts(conn: &mut EspHttpConnection<'_>) {
+    // Must not be smaller than the httpd default (5s) to avoid idle keep-alive
+    // 408 injection and truncated responses.
+    const TIMEOUT_S: i64 = 5;
+    let raw = match conn.raw_connection() {
+        Ok(raw) => raw,
+        Err(e) => {
+            log::warn!("httpd_sock tune: raw_connection failed: {:?}", e);
+            return;
+        }
+    };
+    let fd = unsafe { esp_idf_svc::sys::httpd_req_to_sockfd(raw.handle()) };
+    if fd < 0 {
+        log::warn!("httpd_sock tune: httpd_req_to_sockfd returned {}", fd);
+        return;
+    }
+    let len = core::mem::size_of::<esp_idf_svc::sys::timeval>() as esp_idf_svc::sys::socklen_t;
+    unsafe {
+        let set = |opt: u32| {
+            let tv = esp_idf_svc::sys::timeval {
+                tv_sec: TIMEOUT_S as _,
+                tv_usec: 0,
+            };
+            if esp_idf_svc::sys::lwip_setsockopt(
+                fd,
+                esp_idf_svc::sys::SOL_SOCKET as _,
+                opt as _,
+                &tv as *const _ as *const _,
+                len,
+            ) != 0
+            {
+                log::warn!("httpd_sock tune: setsockopt opt={} failed", opt);
+            }
+        };
+        set(esp_idf_svc::sys::SO_SNDTIMEO);
+        set(esp_idf_svc::sys::SO_RCVTIMEO);
+    }
+}
 
 /// CPU temperature sensor wrapper (RAII).
 struct CpuTemp {
@@ -94,7 +152,8 @@ pub fn start(deps: ConfigHttpDeps) -> anyhow::Result<EspHttpServer<'static>> {
         }
     };
 
-    server.fn_handler("/", Method::Get, |req| {
+    server.fn_handler("/", Method::Get, |mut req| {
+        tune_socket_timeouts(req.connection());
         let _ = req.into_ok_response()?.write_all(INDEX_HTML.as_bytes());
         Ok::<(), anyhow::Error>(())
     })?;
@@ -102,6 +161,7 @@ pub fn start(deps: ConfigHttpDeps) -> anyhow::Result<EspHttpServer<'static>> {
     let wf1 = deps.wifi.clone();
     let nvs1 = deps.nvs.clone();
     server.fn_handler("/api/wifi/mode", Method::Post, move |mut req| {
+        tune_socket_timeouts(req.connection());
         let mut body = Vec::new();
         let mut buf = [0u8; 128];
         loop {
@@ -128,7 +188,8 @@ pub fn start(deps: ConfigHttpDeps) -> anyhow::Result<EspHttpServer<'static>> {
 
     let wf_ap_off = deps.wifi.clone();
     let nvs_ap_off = deps.nvs.clone();
-    server.fn_handler("/api/wifi/ap/off", Method::Post, move |req| {
+    server.fn_handler("/api/wifi/ap/off", Method::Post, move |mut req| {
+        tune_socket_timeouts(req.connection());
         match wifi::disable_ap(&wf_ap_off, &nvs_ap_off) {
             Ok(()) => {
                 let _ = req.into_ok_response()?.write_all(b"AP disabled");
@@ -143,7 +204,8 @@ pub fn start(deps: ConfigHttpDeps) -> anyhow::Result<EspHttpServer<'static>> {
     })?;
 
     let wf_status = deps.wifi.clone();
-    server.fn_handler("/api/wifi/status", Method::Get, move |req| {
+    server.fn_handler("/api/wifi/status", Method::Get, move |mut req| {
+        tune_socket_timeouts(req.connection());
         let (mode, ap_active, sta_connected, ip) = wifi::get_wifi_status(&wf_status);
         let json = std::format!(
             "{{\"mode\":\"{}\",\"ap_active\":{},\"sta_connected\":{},\"ip\":\"{}\"}}",
@@ -157,7 +219,8 @@ pub fn start(deps: ConfigHttpDeps) -> anyhow::Result<EspHttpServer<'static>> {
     })?;
 
     let wf_scan = deps.wifi.clone();
-    server.fn_handler("/api/wifi/scan", Method::Get, move |req| {
+    server.fn_handler("/api/wifi/scan", Method::Get, move |mut req| {
+        tune_socket_timeouts(req.connection());
         let json = wifi::scan_and_format_json(&wf_scan)
             .unwrap_or_else(|e| std::format!("{{\"error\":\"{}\"}}", e));
         let _ = req.into_ok_response()?.write_all(json.as_bytes());
@@ -165,7 +228,8 @@ pub fn start(deps: ConfigHttpDeps) -> anyhow::Result<EspHttpServer<'static>> {
     })?;
 
     let nvs_saved = deps.nvs.clone();
-    server.fn_handler("/api/wifi/saved", Method::Get, move |req| {
+    server.fn_handler("/api/wifi/saved", Method::Get, move |mut req| {
+        tune_socket_timeouts(req.connection());
         let saved = wifi::load_all_sta_configs(&nvs_saved);
         let mut json = String::from("{\"saved\":[");
         for (i, net) in saved.iter().enumerate() {
@@ -181,6 +245,7 @@ pub fn start(deps: ConfigHttpDeps) -> anyhow::Result<EspHttpServer<'static>> {
 
     let nvs_saved2 = deps.nvs.clone();
     server.fn_handler("/api/wifi/saved", Method::Post, move |mut req| {
+        tune_socket_timeouts(req.connection());
         let mut body = Vec::new();
         let mut buf = [0u8; 256];
         loop {
@@ -210,6 +275,7 @@ pub fn start(deps: ConfigHttpDeps) -> anyhow::Result<EspHttpServer<'static>> {
 
     let nvs_forget = deps.nvs.clone();
     server.fn_handler("/api/wifi/saved/forget", Method::Post, move |mut req| {
+        tune_socket_timeouts(req.connection());
         let mut body = Vec::new();
         let mut buf = [0u8; 128];
         loop {
@@ -238,7 +304,8 @@ pub fn start(deps: ConfigHttpDeps) -> anyhow::Result<EspHttpServer<'static>> {
     })?;
 
     let cs_ref = deps.cube_state.clone();
-    server.fn_handler("/api/state", Method::Get, move |req| {
+    server.fn_handler("/api/state", Method::Get, move |mut req| {
+        tune_socket_timeouts(req.connection());
         let cs = cs_ref.lock().unwrap();
         let json = std::format!(
             "{{\"cp\":[{},{},{},{},{},{},{},{}],\"co\":[{},{},{},{},{},{},{},{}],\"ep\":[{},{},{},{},{},{},{},{},{},{},{},{}],\"eo\":[{},{},{},{},{},{},{},{},{},{},{},{}]}}",
@@ -253,7 +320,8 @@ pub fn start(deps: ConfigHttpDeps) -> anyhow::Result<EspHttpServer<'static>> {
     })?;
 
     let cs_ref2 = deps.cube_state.clone();
-    server.fn_handler("/api/facelets", Method::Get, move |req| {
+    server.fn_handler("/api/facelets", Method::Get, move |mut req| {
+        tune_socket_timeouts(req.connection());
         let cs = cs_ref2.lock().unwrap();
         let f = protocol::to_facelet_string(&cs);
         drop(cs);
@@ -265,7 +333,8 @@ pub fn start(deps: ConfigHttpDeps) -> anyhow::Result<EspHttpServer<'static>> {
         Ok::<(), anyhow::Error>(())
     })?;
 
-    server.fn_handler("/api/freq", Method::Get, move |req| {
+    server.fn_handler("/api/freq", Method::Get, move |mut req| {
+        tune_socket_timeouts(req.connection());
         let mhz = unsafe { esp_idf_svc::sys::ets_get_cpu_frequency() };
         let json = std::format!("{{\"mhz\":{}}}", mhz);
         let _ = req.into_ok_response()?.write_all(json.as_bytes());
@@ -273,7 +342,8 @@ pub fn start(deps: ConfigHttpDeps) -> anyhow::Result<EspHttpServer<'static>> {
     })?;
 
     let temp_ref = temp_sensor.clone();
-    server.fn_handler("/api/temp", Method::Get, move |req| {
+    server.fn_handler("/api/temp", Method::Get, move |mut req| {
+        tune_socket_timeouts(req.connection());
         let json = match temp_ref.as_ref() {
             Some(arc) => match arc.lock() {
                 Ok(guard) => match guard.get_celsius() {
@@ -289,7 +359,8 @@ pub fn start(deps: ConfigHttpDeps) -> anyhow::Result<EspHttpServer<'static>> {
     })?;
 
     let proto_get = deps.protocol.clone();
-    server.fn_handler("/api/protocol", Method::Get, move |req| {
+    server.fn_handler("/api/protocol", Method::Get, move |mut req| {
+        tune_socket_timeouts(req.connection());
         let p = *proto_get.lock().unwrap();
         let json = std::format!("{{\"protocol\":\"{:?}\",\"index\":{}}}", p, p as u8);
         let _ = req.into_ok_response()?.write_all(json.as_bytes());
@@ -299,6 +370,7 @@ pub fn start(deps: ConfigHttpDeps) -> anyhow::Result<EspHttpServer<'static>> {
     let proto_set = deps.protocol.clone();
     let on_change = deps.on_protocol_change;
     server.fn_handler("/api/protocol", Method::Post, move |mut req| {
+        tune_socket_timeouts(req.connection());
         let mut body = Vec::new();
         let mut buf = [0u8; 64];
         loop {
@@ -330,7 +402,8 @@ pub fn start(deps: ConfigHttpDeps) -> anyhow::Result<EspHttpServer<'static>> {
     })?;
 
     let proto_gatt = deps.protocol.clone();
-    server.fn_handler("/api/gatt", Method::Get, move |req| {
+    server.fn_handler("/api/gatt", Method::Get, move |mut req| {
+        tune_socket_timeouts(req.connection());
         let p = *proto_gatt.lock().unwrap();
         let cfg = device_config::get_config(p);
         let json = std::format!(

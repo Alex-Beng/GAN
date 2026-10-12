@@ -6,7 +6,7 @@ use esp_idf_svc::http::Method;
 use esp_idf_svc::io::Write;
 use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs};
 
-use shared::config_http::{self, parse_json_str, parse_json_u8, parse_json_u64, ConfigHttpDeps};
+use shared::config_http::{self, parse_json_str, parse_json_u8, parse_json_u64, tune_socket_timeouts, ConfigHttpDeps};
 use shared::device_config::Protocol;
 use shared::protocol;
 use shared::wifi::SharedWifi;
@@ -137,6 +137,7 @@ pub fn start_http_server(
 
     let queue1 = queue.clone();
     server.fn_handler("/api/move", Method::Post, move |mut req| {
+        tune_socket_timeouts(req.connection());
         let mut body = Vec::new();
         let mut buf = [0u8; 64];
         loop {
@@ -186,7 +187,8 @@ pub fn start_http_server(
         Ok::<(), anyhow::Error>(())
     })?;
 
-    server.fn_handler("/api/moves", Method::Options, move |req| {
+    server.fn_handler("/api/moves", Method::Options, move |mut req| {
+        tune_socket_timeouts(req.connection());
         req.into_response(200, Some("OK"), &[
             ("Access-Control-Allow-Origin", "*"),
             ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
@@ -199,6 +201,7 @@ pub fn start_http_server(
     let progress2 = move_progress.clone();
     let delay_ref_moves = move_delay_ms.clone();
     server.fn_handler("/api/moves", Method::Post, move |mut req| {
+        tune_socket_timeouts(req.connection());
         // Optional `?wait=1`: block until the whole batch has been played.
         let want_wait = req.uri().contains("wait=1");
         let mut body = Vec::new();
@@ -356,7 +359,8 @@ pub fn start_http_server(
 
     let cs_ref3 = cube_state.clone();
     let queue_reset = queue.clone();
-    server.fn_handler("/api/reset", Method::Post, move |req| {
+    server.fn_handler("/api/reset", Method::Post, move |mut req| {
+        tune_socket_timeouts(req.connection());
         let mut cs = cs_ref3.lock().unwrap();
         *cs = protocol::CubeState::solved();
         drop(cs);
@@ -369,7 +373,8 @@ pub fn start_http_server(
     })?;
 
     let delay_ref = move_delay_ms.clone();
-    server.fn_handler("/api/delay", Method::Get, move |req| {
+    server.fn_handler("/api/delay", Method::Get, move |mut req| {
+        tune_socket_timeouts(req.connection());
         let d = *delay_ref.lock().unwrap();
         let _ = req.into_ok_response()?
             .write_all(std::format!("{{\"delay\":{}}}", d).as_bytes());
@@ -379,6 +384,7 @@ pub fn start_http_server(
     let delay_ref2 = move_delay_ms.clone();
     let nvs_delay = nvs.clone();
     server.fn_handler("/api/delay", Method::Post, move |mut req| {
+        tune_socket_timeouts(req.connection());
         let mut body = Vec::new();
         let mut buf = [0u8; 64];
         loop {
@@ -405,7 +411,8 @@ pub fn start_http_server(
     })?;
 
     let queue3 = queue.clone();
-    server.fn_handler("/api/moves/clear", Method::Post, move |req| {
+    server.fn_handler("/api/moves/clear", Method::Post, move |mut req| {
+        tune_socket_timeouts(req.connection());
         let mut q = queue3.lock().unwrap();
         let count = q.len();
         q.clear();
