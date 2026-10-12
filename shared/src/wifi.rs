@@ -295,6 +295,11 @@ fn start_sta_only(wifi: &mut BlockingWifi<EspWifi>, ssid: &str, pass: &str) -> b
             ssid
         );
         if let Err(e) = wifi.connect() {
+            // connect() timed out (weak signal / AP busy). ESP-IDF's
+            // esp_wifi_connect() only tries once and must not be called again
+            // while the STA is still in a connecting/connected state, so reset
+            // the state with a disconnect before retrying. (Skipping this makes
+            // every subsequent attempt fail.)
             log::warn!("connect() failed on attempt {}: {:?}", attempt, e);
             let _ = wifi.disconnect();
             if attempt < STA_MAX_RETRIES {
@@ -338,6 +343,7 @@ fn start_mixed(
             ssid
         );
         if let Err(e) = wifi.connect() {
+            // See start_sta_only: reset with disconnect before retrying.
             log::warn!("connect() failed on attempt {}: {:?}", attempt, e);
             let _ = wifi.disconnect();
             if attempt < STA_MAX_RETRIES {
@@ -371,6 +377,41 @@ pub fn start_wifi(
     nvs: EspDefaultNvsPartition,
 ) -> anyhow::Result<SharedWifi> {
     let modem: Modem<'static> = unsafe { core::mem::transmute(modem) };
+
+    // Diagnostic: log every STA connect/disconnect with the reason code and
+    // RSSI so intermittent connection failures can be diagnosed (e.g. reason
+    // 15/204 = handshake timeout, 201 = no AP, 202 = auth fail, 205/212 ...).
+    let diag_loop = sys_loop.clone();
+    match diag_loop.subscribe::<esp_idf_svc::wifi::WifiEvent, _>(move |event| {
+        use esp_idf_svc::wifi::WifiEvent;
+        match event {
+            WifiEvent::StaConnected(e) => {
+                log::error!(
+                    "[wifi-diag] STA connected ssid={:?} bssid={:02X?} channel={} authmode={:?}",
+                    core::str::from_utf8(e.ssid()).unwrap_or("?"),
+                    e.bssid(),
+                    e.channel(),
+                    e.authmode(),
+                );
+            }
+            WifiEvent::StaDisconnected(e) => {
+                log::error!(
+                    "[wifi-diag] STA disconnected ssid={:?} bssid={:02X?} reason={} rssi={}",
+                    core::str::from_utf8(e.ssid()).unwrap_or("?"),
+                    e.bssid(),
+                    e.reason(),
+                    e.rssi(),
+                );
+            }
+            _ => {}
+        }
+    }) {
+        // The subscription unregisters itself on drop, so it must be kept alive
+        // for the whole process lifetime. It is 'static, so leaking is fine.
+        Ok(sub) => core::mem::forget(sub),
+        Err(e) => log::warn!("[wifi-diag] subscribe failed: {:?}", e),
+    }
+
     let mut wifi = BlockingWifi::wrap(
         EspWifi::new(modem, sys_loop.clone(), Some(nvs.clone()))?,
         sys_loop,
@@ -442,6 +483,19 @@ pub fn start_wifi(
 
     wifi.stop().ok();
     thread::sleep(Duration::from_millis(300));
+
+    // Diagnostic: log RSSI/auth of each saved network found by the scan.
+    for ap in scan_results.iter() {
+        if saved.iter().any(|n| n.ssid == ap.ssid.as_str()) {
+            log::warn!(
+                "[wifi-diag] scan: saved AP ssid={:?} rssi={} auth={:?} channel={}",
+                ap.ssid,
+                ap.signal_strength,
+                ap.auth_method,
+                ap.channel,
+            );
+        }
+    }
 
     // Collect in-range saved SSIDs
     let in_range: HashSet<&str> = scan_results
