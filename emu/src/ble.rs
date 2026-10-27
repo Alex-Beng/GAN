@@ -712,6 +712,9 @@ pub async fn run(
                 protocol::IncomingCommand::QiYiSetState => {
                     // handled by the dedicated QiYi branch above
                 }
+                protocol::IncomingCommand::Ack => {
+                    log::info!("CMD ack-only, no reply");
+                }
                 protocol::IncomingCommand::Unknown => {
                     log::warn!("CMD unhandled: {:02X?}", &buf);
                 }

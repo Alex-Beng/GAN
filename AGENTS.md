@@ -57,6 +57,7 @@ GAN device names must match CubeStation's `devicedata` model table so the app se
 - CFOP/OLL solver tests: many `scripts/test_*.py` files
 - Protocol regression over USB: `python scripts/proto_test.py` — builds, flashes via espflash, parses device IP from boot logs, runs per-protocol HTTP matrix (switch/reset/moves/scramble/invalid) and fails on panic/reboot markers in the serial log. Options: `--port COMx`, `--ip`, `--protocols gen2,moyu32`, `--quick`, `--skip-devices`. Expected values come from `scripts/cube_sim.py` (mirror of `protocol.rs` cube math — keep in sync).
 - MoYu32 BLE conformance: `python scripts/ble_check.py` — bleak-based; validates advertising identity (name/MAC/CIC/service UUID) and the WCU wire format (161/163/164/165, crypto) against the csTimer reference. Requires `pip install bleak pycryptodome`.
+- GAN V3 frame conformance: `python scripts/check_v3_frames.py <gansdk_json_dir>` — offline, no hardware. Compares the emulator's Gen4/Gan251 frame layout against the decrypted GAN SDK JSON (`isCRC16`, uplink opcodes, V3-only `offset` fields, downlink protoIds, CRC frame lengths). Decrypt the definitions first with `python scripts/decrypt_gansdk_alpha.py <CubeStation.apk> <outdir>`.
 
 ## Multi-brand BLE proxy (PC-side)
 

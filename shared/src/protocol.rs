@@ -112,6 +112,44 @@ pub fn apply_move(state: &mut CubeState, face: u8, dir: u8) {
     }
 }
 
+// === V3 frame helpers (Gen4 / Gan251) ===
+
+// The GAN SDK sets `isCRC16: 1` for ProtocolV3 and ProtocolV3-2, so every frame
+// (both directions) carries a trailing CRC-16/CCITT-FALSE over all preceding
+// bytes. The app (`BleModule` -> `h.GetCrc_16`) trims trailing zero bytes first
+// and checks `crc16(frame[..len-2])` against `frame[len-2..]`.
+//
+// A frame is laid out as:
+//   [0]        bleProtoId
+//   [1]        dataLength -- the length byte counts the CRC bytes too, i.e. it
+//              must cover every byte that follows it (`[2..len)`).
+//   [2..len-2] payload
+//   [len-2..]  CRC16, big-endian.
+//
+// See docs/cubestation-app-reverse.md (decrypted GanSDK_ProtocolV3.json).
+const V3_FRAME_LEN: usize = 20;
+
+/// Append a CRC16 to a V3 frame built into `buf[..used]`, patching `buf[1]` so
+/// the length byte covers everything after it. Returns the finished frame.
+fn v3_seal(mut buf: [u8; V3_FRAME_LEN], used: usize) -> Vec<u8> {
+    let len = (used + 2).min(V3_FRAME_LEN);
+    buf[1] = (len - 2) as u8;
+    let crc = crate::crypto::crc16_ccitt_false(&buf[..len - 2]);
+    buf[len - 2] = (crc >> 8) as u8;
+    buf[len - 1] = (crc & 0xFF) as u8;
+    buf.to_vec()
+}
+
+/// Pack `state` the way V3 does (7 cp, 8 co, 11 ep, 12 eo) into `out`.
+fn v3_write_state(state: &CubeState, out: &mut [u8]) {
+    let mut w = BitWriter::new(12);
+    for i in 0..7  { w.write_bits(state.cp[i] as u32, 3); }
+    for i in 0..8  { w.write_bits(state.co[i] as u32, 2); }
+    for i in 0..11 { w.write_bits(state.ep[i] as u32, 4); }
+    for i in 0..12 { w.write_bits(state.eo[i] as u32, 1); }
+    out.copy_from_slice(&w.finish());
+}
+
 // === build_facelets ===
 
 pub fn build_facelets(proto: Protocol, serial: u16, state: &CubeState) -> Vec<u8> {
@@ -140,32 +178,28 @@ pub fn build_facelets(proto: Protocol, serial: u16, state: &CubeState) -> Vec<u8
             w.finish()
         }
         Protocol::Gen4 => {
-            let mut w = BitWriter::new(20);
-            w.write_bits(0xED, 8);
-            w.write_bits(12, 8);
-            w.write_bits(serial as u32, 16);
-            for i in 0..7 { w.write_bits(state.cp[i] as u32, 3); }
-            for i in 0..7 { w.write_bits(state.co[i] as u32, 2); }
-            w.write_bits(0, 2);
-            for i in 0..11 { w.write_bits(state.ep[i] as u32, 4); }
-            for i in 0..11 { w.write_bits(state.eo[i] as u32, 1); }
-            w.finish()
+            // 237 facelets: step:16 + cp:3*7 + co:2*8 + ep:4*11 + eo:1*12 + offset:3
+            let mut buf = [0u8; V3_FRAME_LEN];
+            buf[0] = 0xED;
+            buf[2..4].copy_from_slice(&serial.to_le_bytes());
+            let mut used = 4;
+            v3_write_state(state, &mut buf[4..16]);
+            used += 12;
+            // `offset:3` closes the record (the app reads it as part of the frame).
+            buf[used] = 0;
+            used += 1;
+            v3_seal(buf, used)
         }
         Protocol::Gan251 => {
-            let mut buf = [0u8; 20];
+            // V3-2 237 facelets has no trailing `offset` field (verified against
+            // the decrypted GanSDK_ProtocolV3-2.json).
+            let mut buf = [0u8; V3_FRAME_LEN];
             buf[0] = 0xED;
-            buf[1] = 0x0E;
-            buf[2..4].copy_from_slice(&(serial as u16).to_le_bytes());
-            let mut w = BitWriter::new(12);
-            for i in 0..7  { w.write_bits(state.cp[i] as u32, 3); }
-            for i in 0..8  { w.write_bits(state.co[i] as u32, 2); }
-            for i in 0..11 { w.write_bits(state.ep[i] as u32, 4); }
-            for i in 0..12 { w.write_bits(state.eo[i] as u32, 1); }
-            buf[4..16].copy_from_slice(&w.finish());
-            let crc = crate::crypto::crc16_ccitt_false(&buf[..18]);
-            buf[18] = (crc & 0xFF) as u8;
-            buf[19] = (crc >> 8) as u8;
-            buf.to_vec()
+            buf[2..4].copy_from_slice(&serial.to_le_bytes());
+            let mut used = 4;
+            v3_write_state(state, &mut buf[4..16]);
+            used += 12;
+            v3_seal(buf, used)
         }
         Protocol::MoYu32 => build_facelets_moyu32(serial, state),
         Protocol::QiYi => {
@@ -249,66 +283,65 @@ pub fn build_hardware_multi(proto: Protocol) -> Vec<Vec<u8>> {
     };
 
     // hardware name (0xFC / 252), 11-byte model field, zero padded.
-    let mut w = BitWriter::new(20);
-    w.write_bits(0xFC, 8);
-    w.write_bits(1, 8);
+    let mut buf = [0u8; V3_FRAME_LEN];
+    buf[0] = 0xFC;
+    buf[2] = 1;
     for i in 0..11 {
-        w.write_bits(*model.get(i).unwrap_or(&0) as u32, 8);
+        buf[3 + i] = *model.get(i).unwrap_or(&0);
     }
-    msgs.push(w.finish());
+    msgs.push(v3_seal(buf, 14));
 
     // hardware version (0xFE / 254), 16-bit deviceVersion.
-    let mut w = BitWriter::new(20);
-    w.write_bits(0xFE, 8);
-    w.write_bits(2, 8);
-    w.write_bits(0x0100, 16);
-    msgs.push(w.finish());
+    let mut buf = [0u8; V3_FRAME_LEN];
+    buf[0] = 0xFE;
+    buf[2] = 2;
+    buf[3..5].copy_from_slice(&0x0100u16.to_be_bytes());
+    msgs.push(v3_seal(buf, 5));
 
-    // software version (0xFD / 253), two 4-bit fields.
-    let mut w = BitWriter::new(20);
-    w.write_bits(0xFD, 8);
-    w.write_bits(3, 8);
-    w.write_bits(1, 4);
-    w.write_bits(0, 4);
-    msgs.push(w.finish());
+    // software version (0xFD / 253), two 4-bit fields (version:4*2).
+    let mut buf = [0u8; V3_FRAME_LEN];
+    buf[0] = 0xFD;
+    buf[2] = 3;
+    buf[3] = 0x10;
+    msgs.push(v3_seal(buf, 4));
 
     // product date (0xFA / 250), year:16 month:8 day:8.
-    let mut w = BitWriter::new(20);
-    w.write_bits(0xFA, 8);
-    w.write_bits(4, 8);
-    w.write_bits(2024u32, 16);
-    w.write_bits(6u32, 8);
-    w.write_bits(1u32, 8);
-    msgs.push(w.finish());
+    let mut buf = [0u8; V3_FRAME_LEN];
+    buf[0] = 0xFA;
+    buf[2] = 4;
+    buf[3..5].copy_from_slice(&2024u16.to_be_bytes());
+    buf[5] = 6;
+    buf[6] = 1;
+    msgs.push(v3_seal(buf, 7));
 
     // build time (0xF5 / 245), year:16 month:8 day:8 hour:8 minute:8.
-    let mut w = BitWriter::new(20);
-    w.write_bits(0xF5, 8);
-    w.write_bits(5, 8);
-    w.write_bits(2024u32, 16);
-    w.write_bits(6u32, 8);
-    w.write_bits(1u32, 8);
-    w.write_bits(12u32, 8);
-    w.write_bits(0u32, 8);
-    msgs.push(w.finish());
+    let mut buf = [0u8; V3_FRAME_LEN];
+    buf[0] = 0xF5;
+    buf[2] = 5;
+    buf[3..5].copy_from_slice(&2024u16.to_be_bytes());
+    buf[5] = 6;
+    buf[6] = 1;
+    buf[7] = 12;
+    buf[8] = 0;
+    msgs.push(v3_seal(buf, 9));
 
     // restart reason (0xF6 / 246), 16-bit.
-    let mut w = BitWriter::new(20);
-    w.write_bits(0xF6, 8);
-    w.write_bits(6, 8);
-    w.write_bits(0u32, 16);
-    msgs.push(w.finish());
+    let mut buf = [0u8; V3_FRAME_LEN];
+    buf[0] = 0xF6;
+    buf[2] = 6;
+    buf[3..5].copy_from_slice(&0u16.to_be_bytes());
+    msgs.push(v3_seal(buf, 5));
 
     // mac address (0xFF / 255), reversed MAC + 1 reserved byte.
     let mac = crate::device_config::get_config(proto).mac;
-    let mut w = BitWriter::new(20);
-    w.write_bits(0xFF, 8);
-    w.write_bits(7, 8);
+    let mut buf = [0u8; V3_FRAME_LEN];
+    buf[0] = 0xFF;
+    buf[2] = 7;
     for i in 0..6 {
-        w.write_bits(mac[5 - i] as u32, 8);
+        buf[3 + i] = mac[5 - i];
     }
-    w.write_bits(0, 8);
-    msgs.push(w.finish());
+    buf[9] = 0;
+    msgs.push(v3_seal(buf, 10));
 
     msgs
 }
@@ -333,14 +366,12 @@ pub fn build_battery(proto: Protocol, level: u8) -> Vec<u8> {
             w.finish()
         }
         Protocol::Gen4 | Protocol::Gan251 => {
-            let mut buf = [0u8; 20];
+            // 239 battery: index:8 + batteryPower:8
+            let mut buf = [0u8; V3_FRAME_LEN];
             buf[0] = 0xEF;
-            buf[1] = 0x01;
-            buf[2] = level.min(100);
-            let crc = crate::crypto::crc16_ccitt_false(&buf[..18]);
-            buf[18] = (crc & 0xFF) as u8;
-            buf[19] = (crc >> 8) as u8;
-            buf.to_vec()
+            buf[2] = 0;
+            buf[3] = level.min(100);
+            v3_seal(buf, 4)
         }
         Protocol::MoYu32 => build_battery_moyu32(level),
         Protocol::QiYi => {
@@ -395,31 +426,16 @@ pub fn build_move(proto: Protocol, serial: u16, history: &[(u8, u8, u16)], cube_
             } else { w.write_bits(0, 8); }
             w.finish()
         }
-        Protocol::Gen4 => {
-            let mut w = BitWriter::new(20);
-            w.write_bits(0x01, 8);
-            w.write_bits(9, 8);
-            w.write_bits(cube_time, 32);
-            w.write_bits(serial as u32, 16);
-            if let Some(&(face, dir, _)) = history.first() {
-                w.write_bits(dir as u32, 2);
-                w.write_bits(face_to_bitmap(face) as u32, 6);
-            } else { w.write_bits(0, 8); }
-            w.finish()
-        }
-        Protocol::Gan251 => {
-            let mut buf = [0u8; 20];
+        Protocol::Gen4 | Protocol::Gan251 => {
+            // 1 move: time:32 + step:16 + formula(2+6).
+            let mut buf = [0u8; V3_FRAME_LEN];
             buf[0] = 0x01;
-            buf[1] = 0x07;
             buf[2..6].copy_from_slice(&cube_time.to_le_bytes());
-            buf[6..8].copy_from_slice(&(serial as u16).to_le_bytes());
+            buf[6..8].copy_from_slice(&serial.to_le_bytes());
             if let Some(&(face, dir, _)) = history.first() {
                 buf[8] = ((dir as u8 & 0x3) << 6) | (face_to_bitmap(face) & 0x3F);
             }
-            let crc = crate::crypto::crc16_ccitt_false(&buf[..18]);
-            buf[18] = (crc & 0xFF) as u8;
-            buf[19] = (crc >> 8) as u8;
-            buf.to_vec()
+            v3_seal(buf, 9)
         }
         Protocol::MoYu32 => build_move_moyu32(serial, history),
         Protocol::QiYi => {
@@ -459,20 +475,24 @@ pub fn build_move_history(proto: Protocol, start_serial: u8, moves: &[(u8, u8)])
             w.finish()
         }
         Protocol::Gen4 | Protocol::Gan251 => {
+            // 209: step:8 + formulaHistory:(3+1)*n, two moves per byte.
             let count = moves.len().min(0xFF) as u8;
-            let mut w = BitWriter::new(20);
-            w.write_bits(0xD1, 8);
-            w.write_bits(1 + ((count as usize + 1) / 2) as u32, 8);
-            w.write_bits(start_serial as u32, 8);
-            w.write_bits(count as u32, 8);
+            let mut buf = [0u8; V3_FRAME_LEN];
+            buf[0] = 0xD1;
+            buf[2] = start_serial;
+            buf[3] = count;
+            let mut used = 4;
             for chunk in moves.chunks(2) {
+                if used >= V3_FRAME_LEN - 2 { break; }
+                let mut byte = 0u8;
                 for (j, &(face, dir)) in chunk.iter().enumerate() {
-                    w.write_bits(face_to_hist_bitmap(face), 3);
-                    w.write_bits(dir as u32, 1);
-                    if j == 0 && chunk.len() == 1 { w.write_bits(0, 4); }
+                    byte |= ((face_to_hist_bitmap(face) as u8) << 1) | (dir & 1);
+                    if j == 0 { byte <<= 4; }
                 }
+                buf[used] = byte;
+                used += 1;
             }
-            w.finish()
+            v3_seal(buf, used)
         }
         Protocol::Gen2 => Vec::new(),
         Protocol::MoYu32 | Protocol::QiYi => Vec::new(),
@@ -499,17 +519,21 @@ pub fn build_gyro(proto: Protocol, qw: i16, qx: i16, qy: i16, qz: i16, vx: i8, v
             Some(w.finish())
         }
         Protocol::Gen4 | Protocol::Gan251 => {
-            let mut w = BitWriter::new(20);
-            w.write_bits(0xEC, 8);
-            w.write_bits(10, 8);
-            w.write_bits(qw as u16 as u32, 16);
-            w.write_bits(qx as u16 as u32, 16);
-            w.write_bits(qy as u16 as u32, 16);
-            w.write_bits(qz as u16 as u32, 16);
-            w.write_bits((vx & 0xF) as u32, 4);
-            w.write_bits((vy & 0xF) as u32, 4);
-            w.write_bits((vz & 0xF) as u32, 4);
-            Some(w.finish())
+            // 236 gyro: dataFour1:(1+15)*4 + angleSpeed1:(1+3)*3 (+ offset:4 on V3).
+            let mut buf = [0u8; V3_FRAME_LEN];
+            buf[0] = 0xEC;
+            buf[2..4].copy_from_slice(&(qw as u16).to_le_bytes());
+            buf[4..6].copy_from_slice(&(qx as u16).to_le_bytes());
+            buf[6..8].copy_from_slice(&(qy as u16).to_le_bytes());
+            buf[8..10].copy_from_slice(&(qz as u16).to_le_bytes());
+            buf[10] = ((vx as u8 & 0xF) << 4) | (vy as u8 & 0xF);
+            buf[11] = (vz as u8 & 0xF) << 4;
+            let mut used = 12;
+            if proto == Protocol::Gen4 {
+                buf[used] = 0;
+                used += 1;
+            }
+            Some(v3_seal(buf, used))
         }
         Protocol::Gen3 => None,
         Protocol::MoYu32 => {
@@ -541,6 +565,9 @@ pub enum IncomingCommand {
     Battery,
     Reset,
     MoveHistory { start_serial: u8, count: u8 },
+    /// A V3 command the emulator accepts but has no state for (ACK-like or
+    /// calibration requests); handled by ignoring it.
+    Ack,
     /// QiYi (Smart Player Pro) "set state / reset": `FC 4C 08 <ts:4 LE> <facelets:27> <crc>`.
     /// The payload is read by the caller straight from the decrypted buffer.
     QiYiSetState,
@@ -569,12 +596,32 @@ pub fn parse_command_type(proto: Protocol, data: &[u8]) -> IncomingCommand {
         }
         Protocol::Gen4 | Protocol::Gan251 => {
             if data.len() < 20 { return IncomingCommand::Unknown; }
-            match (data[0], data[1], data.get(3)) {
-                (0xDD, 0x04, Some(0xED)) => IncomingCommand::Facelets,
-                (0xDD, 0x04, Some(0xEF)) => IncomingCommand::Battery,
-                (0xDF, 0x03, _) => IncomingCommand::Hardware,
-                (0xD2, 0x0D, _) => IncomingCommand::Reset,
-                (0xD1, 0x04, _) => IncomingCommand::MoveHistory { start_serial: data[2], count: data[3] },
+            // Downlink opcodes come from GanSDK_ProtocolWriteV3.json: the first
+            // 16 bits are `protoId` (bleProtoId:8 + sub-id:8), optionally followed
+            // by a request-specific field at data[3].
+            match (data[0], data[1], data.get(2), data.get(3)) {
+                // appProto 2 / 4: [DD 04] [0xED | 0xEF] request facelets / battery.
+                (0xDD, 0x04, _, Some(0xED)) => IncomingCommand::Facelets,
+                (0xDD, 0x04, _, Some(0xEF)) => IncomingCommand::Battery,
+                // appProto 3: [DF 03] hardware info block.
+                (0xDF, 0x03, _, _) => IncomingCommand::Hardware,
+                // appProto 6: [D2 0D] reset to the given (solved) state.
+                (0xD2, 0x0D, _, _) => IncomingCommand::Reset,
+                // appProto 9: [D1 04] [step:16] [count:16].
+                (0xD1, 0x04, _, _) => IncomingCommand::MoveHistory {
+                    start_serial: data.get(2).copied().unwrap_or(0),
+                    count: data.get(3).copied().unwrap_or(0),
+                },
+                // appProto 13 / 15 / 16 / 21 / 40 are ACK-like or calibration
+                // commands the emulator has no state for; accept silently so the
+                // app does not stall waiting for a response.
+                (0xD3, 0x01, _, _) => IncomingCommand::Ack,
+                (0xD4, 0x01, _, _) => IncomingCommand::Ack,
+                (0xF0, 0x01, _, _) => IncomingCommand::Ack,
+                (0x11, 0x01, _, _) => IncomingCommand::Ack,
+                (0x04, 0x01, _, _) => IncomingCommand::Ack,
+                // appProto 5: [DC 04] accountId:32 -- bind request, unsupported.
+                (0xDC, 0x04, _, _) => IncomingCommand::Unknown,
                 _ => IncomingCommand::Unknown,
             }
         }
@@ -1542,37 +1589,29 @@ pub fn decode_gen3(data: &[u8]) -> CubeEvent {
 
 // === GAN Gen4 (V3) decoder (cf. scripts/proxy/gan.py) ===
 
-/// Parse a decrypted GAN Gen4 (V3) message (repeated 72-bit move records).
+/// Parse a decrypted GAN Gen4 (V3) message.
+///
+/// V3 frames always carry a trailing CRC16 (`isCRC16: 1`), so `data` is
+/// truncated to `dataLength + 2` before parsing (see `v3_seal`).
 pub fn decode_gen4(data: &[u8]) -> CubeEvent {
     let mut r = BitReader::new(data);
     let mode = r.read_bits(8) as u8;
     let length = r.read_bits(8) as u8;
     match mode {
         0x01 => {
-            // One or more 72-bit records; each starts with 0x01.
+            // One 72-bit record: time:32 + step:16 + formula(2+6).
             let mut moves = Vec::new();
-            let mut serial = 0u8;
-            for _ in 0..length.max(1) {
-                let rec_kind = r.read_bits(8) as u8;
-                if rec_kind != 0x01 {
-                    break;
-                }
-                let t0 = r.read_bits(8);
-                let t1 = r.read_bits(8);
-                let t2 = r.read_bits(8);
-                let t3 = r.read_bits(8);
-                let _ts = (t3 << 24) | (t2 << 16) | (t1 << 8) | t0;
-                let s_lo = r.read_bits(8);
-                let s_hi = r.read_bits(8);
-                serial = ((s_hi << 8) | s_lo) as u8;
-                let _pad = r.read_bits(6) as u8;
-                let pow_ = r.read_bits(2) as u8;
-                let mask = r.read_bits(6) as u8;
-                let face = decode_gen_axis(mask, &GEN3_AXIS_MASKS).unwrap_or(6);
-                if face < 6 {
-                    moves.push(CubeMove { face, dir: if pow_ == 2 { 1 } else { 0 }, elapsed: 0 });
-                }
+            let _ts = r.read_bits(32);
+            let s_lo = r.read_bits(8);
+            let s_hi = r.read_bits(8);
+            let serial = ((s_hi << 8) | s_lo) as u8;
+            let pow_ = r.read_bits(2) as u8;
+            let mask = r.read_bits(6) as u8;
+            let face = decode_gen_axis(mask, &GEN3_AXIS_MASKS).unwrap_or(6);
+            if face < 6 {
+                moves.push(CubeMove { face, dir: if pow_ == 2 { 1 } else { 0 }, elapsed: 0 });
             }
+            let _ = length;
             CubeEvent::Move { serial, moves }
         }
         0xED => {
