@@ -80,7 +80,7 @@ cd proxy && cargo run -p proxy
 
 ## 相关项目
 
-- **MOYU** = *Maximize Optimize Your Upsolving*（全称待定，可再调整）—— 基于本项目的自动上分项目。**未开源**。
+- **MOYU** = **M**ore **O**nline **Y**our smart-c**U**be —— 自动上分项目。**未开源**。
 
 ## 串口日志调试
 
