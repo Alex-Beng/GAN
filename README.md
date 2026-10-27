@@ -1,6 +1,6 @@
 # GAN
 
-> **GAN** = *General-cube Adapter Node*（全称待定，可再调整）
+> **GAN** = *General-cube Adapter Nexus*（全称待定，可再调整）
 
 一个跑在 ESP32-C3 上的多品牌智能魔方网关。它不只做模拟：
 
@@ -80,7 +80,7 @@ cd proxy && cargo run -p proxy
 
 ## 相关项目
 
-- [MOYU](../MOYU) - 基于本项目的自动上分项目
+- **MOYU** = *Maximize Optimize Your Upsolving*（全称待定，可再调整）—— 基于本项目的自动上分项目。**未开源**。
 
 ## 串口日志调试
 
