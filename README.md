@@ -1,6 +1,6 @@
 # GAN
 
-> **GAN** = *General-cube Adapter Nexus*（全称待定，可再调整）
+> **GAN** = **G**eneral-cube **A**dapter **N**exus
 
 一个跑在 ESP32-C3 上的多品牌智能魔方网关。它不只做模拟：
 
