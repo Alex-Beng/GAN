@@ -98,3 +98,7 @@ python -m serial.tools.miniterm COM3 115200
 ```
 
 **查看 COM 端口**：设备管理器 → 端口(COM和LPT)，或命令行 `mode`。ESP32-C3 通常出现两个 COM 口，选数字较大的（UART 口）。
+
+## License
+
+[MIT](LICENSE) © 2026 Alex Beng

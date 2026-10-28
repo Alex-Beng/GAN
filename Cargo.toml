@@ -6,6 +6,8 @@ members = ["shared", "emu", "proxy"]
 edition = "2021"
 rust-version = "1.82"
 authors = ["Alex Beng <pc98@qq.com>"]
+license = "MIT"
+repository = "https://github.com/Alex-Beng/GAN"
 
 [workspace.dependencies]
 log = "0.4"
