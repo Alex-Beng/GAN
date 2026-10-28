@@ -81,6 +81,6 @@ GAN device names must match the official model table so the app selects the righ
 ## Key Constraints
 
 - `.cargo/config.toml` is **required** reading — sets target, linker, build-std, and env vars. Do not touch without understanding.
-- BLE advertising must include Manufacturer Specific Data with MAC in last 6 bytes (see `gen2.md` for exact format).
+- BLE advertising must include Manufacturer Specific Data with MAC in the last 6 bytes.
 - Encryption keys are derived from MAC + base key/IV in `crypto.rs:derive_key_iv`.
 - HTTP API: `GET /`, `POST /api/move` (single), `POST /api/moves` (batch), `GET /api/state`, `GET /api/facelets`.

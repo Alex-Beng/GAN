@@ -24,3 +24,11 @@ __pycache__
 docs/*reverse*.md
 docs/cubestation-devicedata.json
 /scripts/decrypt_gansdk_alpha.py
+
+# Local-only protocol notes, scratch files and BLE captures (contain personal
+# device addresses); kept on disk, never published.
+/gen2.md
+/clone.md
+/cfop.md
+/problem.md
+/nRF.log

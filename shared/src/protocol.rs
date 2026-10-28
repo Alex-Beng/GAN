@@ -1481,7 +1481,7 @@ fn read_cube_state(r: &mut BitReader) -> CubeState {
     CubeState { cp, co, ep, eo }
 }
 
-/// Parse a decrypted 20-byte GAN Gen2 (V1) message (see gen2.md §3.3/§3.4).
+/// Parse a decrypted 20-byte GAN Gen2 (V1) message.
 pub fn decode_gen2(data: &[u8]) -> CubeEvent {
     let mut r = BitReader::new(data);
     let kind = r.read_bits(4) as u8;
