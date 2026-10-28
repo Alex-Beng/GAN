@@ -46,7 +46,7 @@ Input->output protocol mapping is caller-independent; input is auto-detected, ou
 
 Gen2 (V1/GANi3SB), Gen3 (V2/GANicV2S), Gen4 (V3/GANi4), Gan251 (V3-2), MoYu32 (WCU), QiYi (Smart). All config in `device_config.rs`. Protocol switches at runtime; stored in NVS.
 
-GAN device names must match CubeStation's `devicedata` model table so the app selects the right protocol version (V1/V2/V3). See `docs/cubestation-app-reverse.md` and `docs/cubestation-devicedata.json`.
+GAN device names must match the official model table so the app selects the right protocol version (V1/V2/V3).
 
 ## Testing
 
@@ -57,7 +57,7 @@ GAN device names must match CubeStation's `devicedata` model table so the app se
 - CFOP/OLL solver tests: many `scripts/test_*.py` files
 - Protocol regression over USB: `python scripts/proto_test.py` — builds, flashes via espflash, parses device IP from boot logs, runs per-protocol HTTP matrix (switch/reset/moves/scramble/invalid) and fails on panic/reboot markers in the serial log. Options: `--port COMx`, `--ip`, `--protocols gen2,moyu32`, `--quick`, `--skip-devices`. Expected values come from `scripts/cube_sim.py` (mirror of `protocol.rs` cube math — keep in sync).
 - MoYu32 BLE conformance: `python scripts/ble_check.py` — bleak-based; validates advertising identity (name/MAC/CIC/service UUID) and the WCU wire format (161/163/164/165, crypto) against the csTimer reference. Requires `pip install bleak pycryptodome`.
-- GAN V3 frame conformance: `python scripts/check_v3_frames.py <gansdk_json_dir>` — offline, no hardware. Compares the emulator's Gen4/Gan251 frame layout against the decrypted GAN SDK JSON (`isCRC16`, uplink opcodes, V3-only `offset` fields, downlink protoIds, CRC frame lengths). Decrypt the definitions first with `python scripts/decrypt_gansdk_alpha.py <CubeStation.apk> <outdir>`.
+- GAN V3 frame conformance: `python scripts/check_v3_frames.py <json_dir>` — offline, no hardware. Compares the emulator's Gen4/Gan251 frame layout against the protocol JSON (`isCRC16`, uplink opcodes, V3-only `offset` fields, downlink protoIds, CRC frame lengths).
 
 ## Multi-brand BLE proxy (PC-side)
 

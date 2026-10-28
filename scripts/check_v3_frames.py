@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
-"""V3 (Gen4 / Gan251) frame conformance check against the decrypted GAN SDK JSON.
+"""V3 (Gen4 / Gan251) frame conformance check against the exported protocol JSON.
 
-The GAN SDK describes each BLE protocol as a JSON document (an encrypted
-`assets/GanSDK_Protocol*.alpha` inside CubeStation.apk). This script compares
-the emulator's frame layout against those definitions so the two stay in sync.
+Each BLE protocol is described by a JSON document with its command table. This
+script compares the emulator's frame layout against those definitions so the two
+stay in sync.
 
-Decrypt the definitions first (they are not committed):
+Point it at a directory of exported `GanSDK_Protocol*.json` files:
 
-    python scripts/decrypt_gansdk_alpha.py <CubeStation.apk> <outdir>
-
-Then run:
-
-    python scripts/check_v3_frames.py <outdir>
+    python scripts/check_v3_frames.py <json_dir>
 
 What is verified:
 
@@ -171,7 +167,7 @@ def check_crc_frames():
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("outdir", help="directory with decrypted GanSDK_Protocol*.json")
+    ap.add_argument("outdir", help="directory with GanSDK_Protocol*.json")
     ap.add_argument("--strict", action="store_true",
                     help="fail (instead of skip) when definitions are missing")
     args = ap.parse_args()
@@ -180,7 +176,7 @@ def main():
     v32 = load(args.outdir, "V3-2")
     write = load(args.outdir, "WriteV3")
     if not (v3 and v32 and write):
-        msg = "missing decrypted definitions in %s (run decrypt_gansdk_alpha.py)" % args.outdir
+        msg = "missing protocol definitions in %s" % args.outdir
         if args.strict:
             print("FAIL: " + msg)
             return 1

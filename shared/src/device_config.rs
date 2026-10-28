@@ -113,9 +113,9 @@ const C_IV_MOYU32: [u8; 16] = [
     85, 6, 127, 49, 126, 103, 33, 87,
 ];
 
-// QiYi AES-128-ECB key. App and csTimer share the SAME key: libapp.so's
-// `Utils.getEncrypter` array is stored as Dart smi words (value<<1), which decodes
-// exactly to these bytes (e.g. 174>>1=87=0x57). See docs/qiyi-app-reverse.md.
+// QiYi AES-128-ECB key. App and csTimer share the SAME key: `Utils.getEncrypter`
+// is stored as Dart smi words (value<<1), which decodes exactly to these bytes
+// (e.g. 174>>1=87=0x57).
 const C_KEY_QIYI: [u8; 16] = [
     0x57, 0xB1, 0xF9, 0xAB, 0xCD, 0x5A, 0xE8, 0xA7,
     0x9C, 0xB9, 0x8C, 0xE7, 0x57, 0x8C, 0x51, 0x08,
@@ -150,8 +150,8 @@ const CFG_GEN2: ProtoCfg = ProtoCfg {
 
 const CFG_GEN3: ProtoCfg = ProtoCfg {
     proto: Protocol::Gen3,
-    // V2 model name; CubeStation maps names by prefix (`ganicv2s_` -> ProtocolV2),
-    // so the advertised name must be a real V2 model (see `devicedata_cn`).
+    // V2 model name; the app maps names by prefix (`ganicv2s_` -> ProtocolV2),
+    // so the advertised name must be a real V2 model.
     device_name: "GANicV2S_EMU",
     mac: &MAC_GEN3,
     service_uuid: "8653000a-43e6-47b7-9cb0-5fc21d4ae340",
@@ -171,7 +171,7 @@ const CFG_GEN3: ProtoCfg = ProtoCfg {
 
 const CFG_GEN4: ProtoCfg = ProtoCfg {
     proto: Protocol::Gen4,
-    // V3 model name; CubeStation maps `gani4_` -> ProtocolV3 (service 00000010-...).
+    // V3 model name; the app maps `gani4_` -> ProtocolV3 (service 00000010-...).
     // The previous "GAN15UI" is not a recognised V3 prefix and fell back to V1.
     device_name: "GANi4_EMU",
     mac: &MAC_GEN4,
@@ -192,7 +192,7 @@ const CFG_GEN4: ProtoCfg = ProtoCfg {
 
 const CFG_GAN251: ProtoCfg = ProtoCfg {
     proto: Protocol::Gan251,
-    // V3-2 model; CubeStation maps `gan251ui_` -> ProtocolV3-2 (its own AES key).
+    // V3-2 model; the app maps `gan251ui_` -> ProtocolV3-2 (its own AES key).
     device_name: "GAN251ui_EMU",
     mac: &MAC_GAN251,
     service_uuid: "00000010-0000-fff7-fff6-fff5fff4fff0",

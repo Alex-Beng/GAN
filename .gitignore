@@ -13,9 +13,14 @@ __pycache__
 !scripts/cube_sim.py
 !scripts/ble_check.py
 !scripts/check_v3_frames.py
-!scripts/decrypt_gansdk_alpha.py
 !scripts/proxy.py
 !scripts/proxy/
 !scripts/requirements-proxy.txt
 .opencode
 /dump
+
+# Local-only notes: reverse-engineering write-ups and the decryption helper
+# stay on disk but are never published.
+docs/*reverse*.md
+docs/cubestation-devicedata.json
+/scripts/decrypt_gansdk_alpha.py

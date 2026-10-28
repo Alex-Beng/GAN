@@ -114,10 +114,9 @@ pub fn apply_move(state: &mut CubeState, face: u8, dir: u8) {
 
 // === V3 frame helpers (Gen4 / Gan251) ===
 
-// The GAN SDK sets `isCRC16: 1` for ProtocolV3 and ProtocolV3-2, so every frame
-// (both directions) carries a trailing CRC-16/CCITT-FALSE over all preceding
-// bytes. The app (`BleModule` -> `h.GetCrc_16`) trims trailing zero bytes first
-// and checks `crc16(frame[..len-2])` against `frame[len-2..]`.
+// V3 (Gen4 / Gan251) frames carry a trailing CRC-16/CCITT-FALSE over all
+// preceding bytes. The peer trims trailing zero bytes first, then checks
+// crc16(frame[..len-2]) against frame[len-2..].
 //
 // A frame is laid out as:
 //   [0]        bleProtoId
@@ -125,8 +124,6 @@ pub fn apply_move(state: &mut CubeState, face: u8, dir: u8) {
 //              must cover every byte that follows it (`[2..len)`).
 //   [2..len-2] payload
 //   [len-2..]  CRC16, big-endian.
-//
-// See docs/cubestation-app-reverse.md (decrypted GanSDK_ProtocolV3.json).
 const V3_FRAME_LEN: usize = 20;
 
 /// Append a CRC16 to a V3 frame built into `buf[..used]`, patching `buf[1]` so
