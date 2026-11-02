@@ -11,11 +11,11 @@ use crate::cube::Move;
 /// Training type, mirrors `GanTimerPart.ExerciseType`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GroupType {
-    /// 1 鈥?鍩虹璁粌 (CFOP / ZB / ZZ / VRLS / EG / TCLL).
+    /// 1 — 基础训练 (CFOP / ZB / ZZ / VRLS / EG / TCLL).
     Basic = 1,
     /// 2 = 专项训练 (F2L 标态).
     Special = 2,
-    /// 3 鈥?鑷敱璁粌 (澶嶅師缁冧範).
+    /// 3 — 自由训练 (复原练习).
     Free = 3,
 }
 
@@ -82,7 +82,7 @@ pub struct TimerRecord {
     pub group_id: u32,
     pub group_disrupt: u32,
     pub library_formula_id: String,
-    /// 1 = 鏅鸿兘榄旀柟, 2 = 闈炴櫤鑳?
+    /// 1 = 智能魔方, 2 = 非智能
     pub cube_smart: u8,
     /// Duration in milliseconds (or [`DNF_TIME_MS`] for DNF).
     pub time_ms: u32,
@@ -162,7 +162,10 @@ impl TimerRecord {
             false,
         );
         field_str(&mut s, "library_formula_id", &self.library_formula_id, false);
-        field_u32(&mut s, "cube_smart", self.cube_smart as u32, false);
+        // The gateway's DTO declares `cube_smart` as a String; sending a number
+        // makes the whole record fail with
+        // `type mismatch for field "cube_smart", expect "string"`.
+        field_str(&mut s, "cube_smart", &self.cube_smart.to_string(), false);
         field_u32(&mut s, "time", self.time_ms, false);
         field_str(&mut s, "time_status", self.time_status.as_str(), false);
         field_u32(&mut s, "tps", self.tps, false);

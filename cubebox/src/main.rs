@@ -1,4 +1,4 @@
-//! `gan-cubebox` 鈥?standalone smart-cube timer / training recorder.
+//! `gan-cubebox` — standalone smart-cube timer / training recorder.
 //!
 //! Behaviour:
 //!   * BLE Central connects a physical GAN/MoYu/QiYi cube and decodes moves.

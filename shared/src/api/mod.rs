@@ -52,13 +52,19 @@ impl Default for ClientConfig {
             sub_app_id: 6,
             channel: "10003".to_string(),
             client_version: "6.8".to_string(),
-            os_version: "7.1.2".to_string(),
-            device_model: "CubeBox".to_string(),
-            brand: "GAN".to_string(),
+            // These headers are informational telemetry: `timer/*` and
+            // `ganUser/*` do not validate `deviceModel`, `brand` or
+            // `osVersion` (verified against the gateway). Report the real
+            // hardware instead of pretending to be a phone.
+            os_version: "5.5.3".to_string(),
+            device_model: "ESP32-S3".to_string(),
+            brand: "Espressif".to_string(),
             language: "zh_cn".to_string(),
             origin_language: "zh".to_string(),
             user_type: 3,
             client_zone: 28800,
+            // The gateway only knows Android(1)/iOS(2); keep the Android value
+            // so analytics buckets stay meaningful.
             os_type: 1,
             timeout: Duration::from_secs(12),
         }

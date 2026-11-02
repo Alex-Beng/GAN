@@ -164,7 +164,7 @@ pub fn apply(st: &mut AppState, ev: InputEvent, seed: u64) {
             st.bump();
         }
         InputEvent::LongPress(Button::Next) => {
-            // Long press: cycle the training group (CFOP / EG / 澶嶅師缁冧範).
+            // Long press: cycle the training group (CFOP / EG / 复原练习).
             st.group_type = match st.group_type {
                 shared::timer::GroupType::Basic => shared::timer::GroupType::Special,
                 shared::timer::GroupType::Special => shared::timer::GroupType::Free,

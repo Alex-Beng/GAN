@@ -3,10 +3,10 @@
 //! Produces the two payloads the CubeStation client attaches to a practice
 //! record:
 //!
-//! * `msg_solution_analyse` 鈥?one `MsgSolutionAnalyse` per segment (whole solve,
+//! * `msg_solution_analyse` — one `MsgSolutionAnalyse` per segment (whole solve,
 //!   cross/F2L/OLL/PLL, and the four F2L pairs). The client serializes these
 //!   protobuf messages with Newtonsoft.Json, so the JSON keys are PascalCase.
-//! * `review` 鈥?`MsgCubeReview` with the per-move list (`MUserMoveL`).
+//! * `review` — `MsgCubeReview` with the per-move list (`MUserMoveL`).
 //!
 //! Segmentation follows cstimer's `cubeutil.getProgress` model: replay the
 //! solve, score each intermediate state with `progress()`, and cut where the
@@ -34,7 +34,7 @@ pub struct PhaseStat {
     pub total_duration: u32,
     pub duration: u32,
     pub turn: u32,
-    /// Turns per second 脳1000 (the unit of `ReportTimerDataReq.tps`).
+    /// Turns per second ×1000 (the unit of `ReportTimerDataReq.tps`).
     pub tps_milli: u32,
     pub rotate: u32,
     pub smooth_index: u32,
@@ -357,8 +357,10 @@ fn f2l_pairs(
 
 /// Serialize the analysis list (`msg_solution_analyse`).
 ///
-/// PascalCase keys because the client serializes protobuf messages with
-/// Newtonsoft.Json, which uses the generated C# property names verbatim.
+/// Keys are proto3 JSON **lowerCamelCase**. Verified against the gateway: an
+/// entry with an unknown spelling (e.g. C# `Type`) is silently dropped, while
+/// `type`/`turn`/... are strictly type-checked
+/// (`type mismatch for field "msg_solution_analyse[0].order"`).
 pub fn to_json_array(sol: &Solution) -> String {
     let mut s = String::with_capacity(512);
     s.push('[');
@@ -374,7 +376,7 @@ pub fn to_json_array(sol: &Solution) -> String {
 fn push_stat(out: &mut String, p: &PhaseStat, first: bool) {
     let _ = first;
     out.push_str(&format!(
-        "{{\"Type\":1,\"Order\":{},\"TotalDuration\":{},\"Duration\":{},\"Turn\":{},\"Tps\":{:.1},\"Rotate\":{},\"SmoothIndex\":{},\"ObserveTime\":{},\"AdjustTime\":0,\"ExecuteTime\":0,\"AufTime\":{},\"StartStep\":{},\"OverStep\":{}}}",
+        "{{\"type\":1,\"order\":{},\"totalDuration\":{},\"duration\":{},\"turn\":{},\"tps\":{:.1},\"rotate\":{},\"smoothIndex\":{},\"observeTime\":{},\"adjustTime\":0,\"executeTime\":0,\"aufTime\":{},\"startStep\":{},\"overStep\":{}}}",
         p.order,
         p.total_duration,
         p.duration,
