@@ -282,6 +282,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
+name = "cubebox"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "embassy-futures",
+ "embassy-time",
+ "embedded-graphics",
+ "embuild",
+ "esp-idf-svc",
+ "esp32-nimble",
+ "log",
+ "serde_json",
+ "shared",
+]
+
+[[package]]
 name = "cvt"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1747,22 +1763,6 @@ dependencies = [
  "hashbrown 0.15.5",
  "indexmap",
  "semver",
-]
-
-[[package]]
-name = "watch"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "embassy-futures",
- "embassy-time",
- "embedded-graphics",
- "embuild",
- "esp-idf-svc",
- "esp32-nimble",
- "log",
- "serde_json",
- "shared",
 ]
 
 [[package]]

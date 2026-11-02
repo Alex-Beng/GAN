@@ -141,7 +141,7 @@ pub struct ConfigHttpDeps {
 pub fn start(deps: ConfigHttpDeps) -> anyhow::Result<EspHttpServer<'static>> {
     let mut server = EspHttpServer::new(&Configuration {
         max_open_sockets: 7,
-        // Shared config endpoints (15) plus firmware-specific ones; the watch
+        // Shared config endpoints (15) plus firmware-specific ones; the cubebox
         // firmware adds five more.
         max_uri_handlers: 32,
         ..Default::default()

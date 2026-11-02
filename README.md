@@ -2,14 +2,15 @@
 
 > **GAN** = **G**eneral-cube **A**dapter **N**exus
 
-一个跑在 ESP32-C3 上的多品牌智能魔方网关，包含**两个独立固件**，按需烧录其中一个：
+一个多品牌智能魔方网关工程，包含**三个独立固件**（emu/proxy 跑 ESP32-C3，cubebox 跑 ESP32-S3），按需烧录：
 
 - **emu 固件** —— 把自己伪装成一块真实的智能魔方，让官方 App 连上来。
 - **proxy 固件** —— 同时连实体魔方和手机 App，把实体魔方的转动实时转发出去。
+- **cubebox 固件** —— 独立小屏计时盒：连实体魔方，屏幕显示打乱/计时/成绩，记录本地落盘并联网批量上传，支持面对面 BLE 多人 bo5 对战。
 
 两个固件都把 **HTTP 网页控制/配置** 当作主要交互方式：烧录一次之后，所有日常操作（转动魔方、切换协议、配 WiFi、看状态）都在浏览器里完成，不用装客户端，也不用为每次使用重新烧录。注意切换协议会让设备重启以重建 BLE 会话（并非重新烧录）。
 
-## 两个固件
+## emu 与 proxy 固件
 
 | | emu（模拟） | proxy（代理/网关） |
 |---|---|---|
@@ -63,10 +64,11 @@
 
 ## 硬件与构建
 
-- ESP32-C3 开发板
-- Rust nightly + `espflash`、ESP-IDF v5.5.3
+- ESP32-C3 开发板（emu / proxy）
+- ESP32-S3 N16R8（16MB Flash + 8MB Octal PSRAM）+ ST7789 240×320 SPI IPS 屏（cubebox）
+- Rust nightly + `espflash`、ESP-IDF v5.5.3；cubebox 另需 Xtensa 工具链（`cargo install espup && espup install`）
 
-两个固件各有独立的 sdkconfig，**必须进到对应 crate 目录里构建**；烧录时只烧你要用的那一个：
+每个固件都有独立的 sdkconfig，**必须进到对应 crate 目录里构建**；烧录时只烧你要用的那一个：
 
 ```bash
 # emu
@@ -76,6 +78,10 @@ cd emu && cargo run -p emu          # 烧录并开串口监视
 # proxy
 cd proxy && cargo build -p proxy
 cd proxy && cargo run -p proxy
+
+# cubebox（ESP32-S3）
+cd cubebox && cargo build
+cd cubebox && cargo run             # espflash flash --monitor
 ```
 
 ## 相关项目

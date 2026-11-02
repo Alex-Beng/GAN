@@ -5,7 +5,7 @@ use crate::protocol::CubeState;
 /// True when every corner/edge is in place and correctly oriented.
 ///
 /// This is stricter than "the cube looks solved": a whole-cube rotation would
-/// leave `cp`/`ep` permuted, so the watch treats it as unsolved. For a timer
+/// leave `cp`/`ep` permuted, so the cubebox treats it as unsolved. For a timer
 /// that is the correct call (the user must actually undo the scramble).
 pub fn is_solved(state: &CubeState) -> bool {
     for (i, &v) in state.cp.iter().enumerate() {

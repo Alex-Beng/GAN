@@ -1,4 +1,4 @@
-//! `gan-watch` 鈥?standalone smart-cube timer / training recorder.
+//! `gan-cubebox` 鈥?standalone smart-cube timer / training recorder.
 //!
 //! Behaviour:
 //!   * BLE Central connects a physical GAN/MoYu/QiYi cube and decodes moves.
@@ -11,7 +11,7 @@
 //!     four buttons; provisioning and login are also available over HTTP.
 //!
 //! Build from this directory (its .cargo/config.toml selects ESP32-S3):
-//!   cd watch && cargo build
+//!   cd cubebox && cargo build
 
 #[cfg(feature = "ble")]
 mod ble_central;
@@ -68,7 +68,7 @@ fn main() {
         } as *const _ as *mut _);
     }
 
-    log::info!("=== gan-watch === booting");
+    log::info!("=== gan-cubebox === booting");
 
     let peripherals = Peripherals::take().unwrap();
     let sys_loop = EspSystemEventLoop::take().unwrap();
@@ -157,7 +157,7 @@ fn main() {
             force_upload: force_upload.clone(),
         },
     ) {
-        log::error!("watch http endpoints unavailable: {e}");
+        log::error!("cubebox http endpoints unavailable: {e}");
     }
 
     // --- storage + upload worker -------------------------------------------

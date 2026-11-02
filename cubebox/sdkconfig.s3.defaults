@@ -1,7 +1,7 @@
 # ESP32-S3 only options. Kept separate from sdkconfig.defaults so the crate can
-# still be type-checked against an ESP32-C3 sdkconfig (see watch/sdkconfig.c3.defaults).
+# still be type-checked against an ESP32-C3 sdkconfig (see cubebox/sdkconfig.c3.defaults).
 
-# 8 MB PSRAM (N16R8 modules). The watch keeps a full-screen framebuffer and a
+# 8 MB PSRAM (N16R8 modules). The cubebox keeps a full-screen framebuffer and a
 # queue of pending records in RAM; internal SRAM alone is not enough.
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y

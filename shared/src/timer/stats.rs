@@ -1,4 +1,4 @@
-//! Result statistics (WCA averages), shared by the watch UI and the tests.
+//! Result statistics (WCA averages), shared by the cubebox UI and the tests.
 
 use super::record::DNF_TIME_MS;
 use super::session::Penalty;

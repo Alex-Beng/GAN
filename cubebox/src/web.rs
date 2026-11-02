@@ -1,7 +1,7 @@
-//! Watch-specific HTTP endpoints, registered on the server returned by
+//! CubeBox-specific HTTP endpoints, registered on the server returned by
 //! `shared::config_http::start`.
 //!
-//! These exist so the phone can provision the watch without a keyboard on the
+//! These exist so the phone can provision the cubebox without a keyboard on the
 //! device: WiFi is already handled by the shared UI, and this module adds
 //! account login plus read-only status.
 //!
@@ -49,7 +49,7 @@ pub struct Deps {
 
 pub fn register(server: &mut EspHttpServer<'static>, deps: Deps) -> Result<()> {
     let app = deps.app.clone();
-    server.fn_handler("/api/watch/state", Method::Get, move |mut req| {
+    server.fn_handler("/api/cubebox/state", Method::Get, move |mut req| {
         shared::config_http::tune_socket_timeouts(req.connection());
         let body = {
             let st = app.lock().unwrap();
@@ -75,7 +75,7 @@ pub fn register(server: &mut EspHttpServer<'static>, deps: Deps) -> Result<()> {
     })?;
 
     let app = deps.app.clone();
-    server.fn_handler("/api/watch/records", Method::Get, move |mut req| {
+    server.fn_handler("/api/cubebox/records", Method::Get, move |mut req| {
         shared::config_http::tune_socket_timeouts(req.connection());
         let body = {
             let st = app.lock().unwrap();
@@ -100,7 +100,7 @@ pub fn register(server: &mut EspHttpServer<'static>, deps: Deps) -> Result<()> {
 
     let nvs = deps.nvs.clone();
     let app = deps.app.clone();
-    server.fn_handler("/api/watch/auth/send", Method::Post, move |mut req| {
+    server.fn_handler("/api/cubebox/auth/send", Method::Post, move |mut req| {
         shared::config_http::tune_socket_timeouts(req.connection());
         let body = read_body!(req);
         let phone = shared::config_http::parse_json_str(&body, "phone")
@@ -153,7 +153,7 @@ pub fn register(server: &mut EspHttpServer<'static>, deps: Deps) -> Result<()> {
 
     let nvs = deps.nvs.clone();
     let app = deps.app.clone();
-    server.fn_handler("/api/watch/auth/login", Method::Post, move |mut req| {
+    server.fn_handler("/api/cubebox/auth/login", Method::Post, move |mut req| {
         shared::config_http::tune_socket_timeouts(req.connection());
         let body = read_body!(req);
         let phone = shared::config_http::parse_json_str(&body, "phone")
@@ -187,7 +187,7 @@ pub fn register(server: &mut EspHttpServer<'static>, deps: Deps) -> Result<()> {
     // --- manual upload trigger ----------------------------------------------
 
     let force = deps.force_upload.clone();
-    server.fn_handler("/api/watch/upload", Method::Post, move |mut req| {
+    server.fn_handler("/api/cubebox/upload", Method::Post, move |mut req| {
         shared::config_http::tune_socket_timeouts(req.connection());
         *force.lock().unwrap() = true;
         let _ = req

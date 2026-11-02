@@ -6,7 +6,7 @@ use anyhow::{anyhow, Result};
 use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
 use serde_json::{json, Value};
 
-const NAMESPACE: &str = "watch_cfg";
+const NAMESPACE: &str = "cubebox_cfg";
 const KEY: &str = "settings";
 const BUF_LEN: usize = 1024;
 

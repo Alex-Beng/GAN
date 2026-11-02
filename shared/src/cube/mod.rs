@@ -1,4 +1,4 @@
-//! Cube primitives used by the watch firmware.
+//! Cube primitives used by the cubebox firmware.
 //!
 //! These are thin layers on top of [`crate::protocol::CubeState`]: WCA move
 //! notation parsing, scramble generation, solved detection and CFOP phase

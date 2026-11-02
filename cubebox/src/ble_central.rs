@@ -1,4 +1,4 @@
-//! BLE Central for the watch: scan / connect a physical smart cube, identify its
+//! BLE Central for the cubebox: scan / connect a physical smart cube, identify its
 //! protocol by GATT service UUID, establish link encryption, subscribe to the
 //! state characteristic and decode notifications into [`CubeEvent`].
 //!

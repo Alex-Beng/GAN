@@ -2,7 +2,7 @@
 //!
 //! Transport is BLE GATT: the host advertises a custom service and broadcasts
 //! room state via notifications; guests connect and write commands. Because the
-//! watch only needs to agree on a **scramble seed** (WCA scramble generation is
+//! cubebox only needs to agree on a **scramble seed** (WCA scramble generation is
 //! deterministic), messages stay tiny.
 //!
 //! Match format: best-of-5 (first to 3 round wins). Each round:

@@ -2,26 +2,32 @@
 
 ## Build & Flash
 
-This repo is a **Cargo workspace** with three crates:
+This repo is a **Cargo workspace** with four crates:
 
 - `emu/` — GATT server firmware (`gan-emu` bin), the original emulator
 - `proxy/` — GATT client firmware (`gan-proxy` bin), connects physical cubes
-- `shared/` — lib crate shared by both (`crypto`, `protocol`, `device_config`)
+- `cubebox/` — standalone timer firmware (`gan-cubebox` bin) for the ESP32-S3
+  "cube box": BLE cube link, ST7789 UI, LittleFS records, offline upload and
+  face-to-face BLE rooms. Targets **esp32s3** (Xtensa), unlike the other two.
+- `shared/` — lib crate shared by all (`crypto`, `protocol`, `device_config`,
+  `cube`, `timer`, `room`, `api`)
 
-**Per-crate sdkconfig**: `emu` and `proxy` need different BLE roles, and
-`esp-idf-sys` is built once per invocation. The sdkconfig is selected via
+**Per-crate sdkconfig**: `emu`, `proxy` and `cubebox` need different BLE roles,
+and `esp-idf-sys` is built once per invocation. The sdkconfig is selected via
 per-crate `.cargo/config.toml` env vars (`ESP_IDF_SYS_ROOT_CRATE`,
 `ESP_IDF_SDKCONFIG_DEFAULTS`) — so **build from inside the crate directory**:
 
 - Build emu: `cd emu && cargo build -p emu`
 - Build proxy: `cd proxy && cargo build -p proxy`
+- Build cubebox: `cd cubebox && cargo build` (needs the Xtensa toolchain:
+  `cargo install espup && espup install`)
 - Flash + monitor: `cd emu && cargo run -p emu` (or `espflash flash --monitor ... target/riscv32imc-esp-espidf/debug/gan-emu`)
 - Requires nightly Rust (`rust-toolchain.toml`), `espflash` installed, and ESP-IDF v5.5.3 at `D:\esp` (set via `ESP_IDF_TOOLS_INSTALL_DIR` in root `.cargo/config.toml`).
 - Building with plain `cargo build` from the workspace root does **not** select a sdkconfig — always build from the crate dir or with the env vars set.
 
 ## Project Structure
 
-- Workspace root: `Cargo.toml` (`[workspace] members = ["shared","emu","proxy"]`)
+- Workspace root: `Cargo.toml` (`[workspace] members = ["shared","emu","proxy","cubebox"]`)
 - `emu/src/main.rs` — wires BLE, HTTP, WiFi, serial in parallel
 - `emu/src/`: `ble.rs` (BLE peripheral, encrypt/notify), `http.rs` (emu move-injection endpoints, on top of shared config HTTP), `serial.rs` (USB JTAG console)
 - `shared/src/`: `protocol.rs` (encode/decode for 6 cube protocols + `CubeEvent`/`decode_*`), `crypto.rs` (AES-CBC/ECB via ESP-IDF hw), `device_config.rs` (MACs, keys, BLE UUIDs per protocol), `wifi.rs` (STA/AP), `config_http.rs` (web UI + WiFi/protocol/state endpoints), `index.html`
@@ -29,6 +35,8 @@ per-crate `.cargo/config.toml` env vars (`ESP_IDF_SYS_ROOT_CRATE`,
 - `proxy/src/central.rs` — multi-protocol Central: name pre-filter → connect → GATT service-UUID detection → per-protocol decrypt → `decode_*` → `CubeEvent`
 - `proxy/src/server.rs` — virtual cube peripheral; encodes for the configured output protocol
 - `proxy/src/config.rs` — NVS persistence of the output protocol
+- `cubebox/src/main.rs` — standalone timer: WiFi/SNTP/LittleFS/HTTP + BLE cube link + room task + UI thread
+- `cubebox/src/`: `ble_central.rs` (cube link), `room_ble.rs` (face-to-face GATT transport), `display.rs` (hand-rolled ST7789), `ui.rs`, `input.rs` (4 buttons), `state.rs`, `store.rs` (LittleFS queue), `sync.rs` (batch upload), `web.rs` (login/records HTTP)
 - No Rust tests (`harness = false`)
 
 ## Proxy gateway

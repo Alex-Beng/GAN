@@ -1,6 +1,6 @@
 //! `ganUser` account endpoints: SMS captcha login and token -> user info.
 //!
-//! The watch only needs a one-time login to learn `appUserId` (the `timer`
+//! The cubebox only needs a one-time login to learn `appUserId` (the `timer`
 //! service attributes records by the `user_id` body field, not by token).
 //!
 //! Verified against UAT: no `signature` header is required, but the
@@ -24,7 +24,7 @@ pub struct LoginResult {
     pub is_new_user: bool,
 }
 
-/// Public profile fields the watch cares about.
+/// Public profile fields the cubebox cares about.
 #[derive(Clone, Debug, Default)]
 pub struct UserProfile {
     pub app_user_id: i64,

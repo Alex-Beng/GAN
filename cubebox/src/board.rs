@@ -1,4 +1,4 @@
-//! Board wiring for the watch.
+//! Board wiring for the cubebox.
 //!
 //! Defaults target an ESP32-S3-DevKitC (N16R8) with an ST7789 240x320 IPS panel
 //! on SPI2 and four momentary buttons to GND. Adjust the pin numbers here when

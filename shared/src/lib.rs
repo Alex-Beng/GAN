@@ -1,5 +1,5 @@
 //! Shared protocol/crypto/config logic used by the `emu` (GATT server),
-//! `proxy` (GATT client) and `watch` (standalone timer) firmwares.
+//! `proxy` (GATT client) and `cubebox` (standalone timer) firmwares.
 
 pub mod api;
 pub mod config_http;

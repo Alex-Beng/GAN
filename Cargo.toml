@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["shared", "emu", "proxy", "watch"]
+members = ["shared", "emu", "proxy", "cubebox"]
 
 [workspace.package]
 edition = "2021"
@@ -20,7 +20,7 @@ esp32-nimble = "0.12"
 embuild = "0.33"
 shared = { path = "shared" }
 
-# Drawing primitives for the watch firmware (pure Rust, no C bindings).
+# Drawing primitives for the cubebox firmware (pure Rust, no C bindings).
 embedded-graphics = "0.8"
 
 [profile.release]

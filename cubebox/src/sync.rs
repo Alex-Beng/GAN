@@ -27,7 +27,7 @@ pub struct SyncCtx {
     pub wifi: SharedWifi,
     pub store: Store,
     pub nvs: EspDefaultNvsPartition,
-    /// Set by `POST /api/watch/upload` to request an immediate attempt.
+    /// Set by `POST /api/cubebox/upload` to request an immediate attempt.
     pub force_upload: std::sync::Arc<std::sync::Mutex<bool>>,
 }
 

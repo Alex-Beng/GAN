@@ -999,7 +999,7 @@ const FBUDLR_TO_URFDLB: [u32; 6] = [2, 5, 0, 3, 4, 1];
 /// Reverse of `to_facelet_string`: recover a CubeState from 54 sticker colours
 /// (URFDLB colour indices 0..5, centres implicit by position).
 ///
-/// This is also what `CubeEvent::Facelets` hands over, so the watch firmware can
+/// This is also what `CubeEvent::Facelets` hands over, so the cubebox firmware can
 /// seed its live state from a snapshot.
 pub fn decode_facelets(f: [u8; 54]) -> CubeState {
     let mut state = CubeState::solved();

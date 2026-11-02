@@ -1,4 +1,4 @@
-//! Timer domain shared by the watch firmware and the desktop/gateway crates.
+//! Timer domain shared by the cubebox firmware and the desktop/gateway crates.
 
 pub mod analyse;
 pub mod record;

@@ -1,6 +1,6 @@
 //! Minimal CubeStation gateway client for on-device use.
 //!
-//! Only what the watch firmware needs: build the common header set, POST/GET
+//! Only what the cubebox firmware needs: build the common header set, POST/GET
 //! JSON over HTTPS (verified against the ESP-IDF CA bundle), and expose the
 //! service `code`/`message` pair.
 //!
@@ -53,7 +53,7 @@ impl Default for ClientConfig {
             channel: "10003".to_string(),
             client_version: "6.8".to_string(),
             os_version: "7.1.2".to_string(),
-            device_model: "Watch".to_string(),
+            device_model: "CubeBox".to_string(),
             brand: "GAN".to_string(),
             language: "zh_cn".to_string(),
             origin_language: "zh".to_string(),

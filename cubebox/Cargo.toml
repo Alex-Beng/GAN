@@ -1,12 +1,12 @@
 [package]
-name = "watch"
+name = "cubebox"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "gan-watch"
+name = "gan-cubebox"
 path = "src/main.rs"
 harness = false
 
@@ -14,7 +14,7 @@ harness = false
 default = ["ble"]
 # BLE Central (real cube input). Disable for UI/layout work on boards without a
 # BLE build, or to build with a NimBLE-less ESP-IDF config:
-#   cargo check -p watch --no-default-features
+#   cargo check -p cubebox --no-default-features
 ble = ["dep:esp32-nimble", "dep:embassy-time", "dep:embassy-futures"]
 
 [dependencies]
@@ -32,7 +32,7 @@ shared.workspace = true
 embuild.workspace = true
 
 [package.metadata.esp-idf-sys]
-esp_idf_sdkconfig_defaults = ["watch/sdkconfig.defaults", "watch/sdkconfig.s3.defaults"]
+esp_idf_sdkconfig_defaults = ["cubebox/sdkconfig.defaults", "cubebox/sdkconfig.s3.defaults"]
 
 # LittleFS lives in its own data partition (`storage` in partitions.csv) so the
 # record queue is not squeezed into the 24 KB default NVS partition.
