@@ -1,0 +1,7 @@
+[build]
+target = "xtensa-esp32s3-espidf"
+
+[env]
+MCU = "esp32s3"
+ESP_IDF_SYS_ROOT_CRATE = "watch"
+ESP_IDF_SDKCONFIG_DEFAULTS = "watch/sdkconfig.defaults;watch/sdkconfig.s3.defaults"

@@ -51,7 +51,7 @@ impl<'a> BitReader<'a> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CubeState {
     pub cp: [u8; 8],
     pub co: [u8; 8],
@@ -650,6 +650,12 @@ const EDGE_COLOR: [[u8; 2]; 12] = [
     [3, 4], [3, 5], [2, 1], [2, 4], [5, 4], [5, 1],
 ];
 
+/// Facelet snapshot as colour indices (0..5 = U R F D L B), which is the form
+/// `CubeEvent::Facelets` and the CFOP phase detector use.
+pub fn to_facelet_indices(state: &CubeState) -> [u8; 54] {
+    facelets_to_indices(&to_facelet_string(state))
+}
+
 pub fn to_facelet_string(state: &CubeState) -> [u8; 54] {
     let color_chars = [b'U', b'R', b'F', b'D', b'L', b'B'];
     let mut f = [b'U'; 54];
@@ -990,9 +996,12 @@ pub fn facelets48_to_state_moyu32(facelets: &[u8; 48]) -> CubeState {
 /// WCU FBUDLR color/face index -> our URFDLB index.
 const FBUDLR_TO_URFDLB: [u32; 6] = [2, 5, 0, 3, 4, 1];
 
-/// Reverse of `to_facelet_string`: recover a CubeState from 54 sticker colors
-/// (URFDLB color indices, centers implicit by position).
-fn decode_facelets(f: [u8; 54]) -> CubeState {
+/// Reverse of `to_facelet_string`: recover a CubeState from 54 sticker colours
+/// (URFDLB colour indices 0..5, centres implicit by position).
+///
+/// This is also what `CubeEvent::Facelets` hands over, so the watch firmware can
+/// seed its live state from a snapshot.
+pub fn decode_facelets(f: [u8; 54]) -> CubeState {
     let mut state = CubeState::solved();
     for i in 0..8 {
         'find: for j in 0..8 {

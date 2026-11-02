@@ -1,0 +1,50 @@
+# Rust needs more main-task stack than the C default (3K).
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
+
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=4096
+CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=6144
+
+# BLE / NimBLE: the watch is a *Central only* (it connects a physical cube and
+# never advertises a virtual one). Dropping the peripheral/broadcaster roles
+# keeps the controller heap smaller.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_CONTROLLER_ENABLED=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=6
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+CONFIG_BT_NIMBLE_NVS_PERSIST=n
+
+# WiFi (STA for uploads, AP for provisioning).
+CONFIG_ESP_WIFI_ENABLED=y
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
+
+# HTTPS against the CubeStation gateway needs the CA bundle.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+CONFIG_MBEDTLS_SSL_PROTO_TLS1_2=y
+# Smaller TLS record buffers: a gateway JSON reply is a few KB at most.
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=8192
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+
+# LittleFS for the record queue (see partitions.csv `storage`).
+CONFIG_LITTLEFS_SDMMC_SUPPORT=n
+
+CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=y
+
+# Timestamps for records and `timeTrial` period handling.
+CONFIG_LWIP_SNTP_MAX_SERVERS=1
+
+# Power: dynamic frequency scaling, keep light sleep off (BLE connections are
+# timing sensitive and light sleep with NimBLE needs extra configuration).
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+
+# Diagnostics.
+CONFIG_ESP_SYSTEM_USE_FRAME_POINTER=y
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
