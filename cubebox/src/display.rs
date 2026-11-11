@@ -1,9 +1,12 @@
-//! ST7789 (240x320 IPS) over SPI, plus a PSRAM-backed canvas that implements
+//! ST7789 (240x320 IPS) over SPI, plus a banded canvas that implements
 //! `embedded-graphics`' `DrawTarget`.
 //!
-//! The driver is intentionally hand-rolled: it is ~200 lines, needs no C
-//! bindings, and lets us flush arbitrary rectangles (essential when the
-//! framebuffer lives in PSRAM and only the timer digits change).
+//! The driver is intentionally hand-rolled: it needs no C bindings and it only
+//! ever buffers a horizontal band of the screen. That keeps the framebuffer in
+//! internal SRAM (~19 KB for 240x320 @ 40 rows) so the firmware also fits an
+//! ESP32-C3 with no PSRAM. The caller paints the UI once per band and flushes
+//! it; `DrawTarget` coordinates stay in full-screen space, rows outside the
+//! current band are silently dropped.
 
 use core::convert::Infallible;
 
@@ -166,21 +169,15 @@ impl Display {
         self.cmd(RAMWR)
     }
 
-    /// Push a rectangle of the canvas to the panel. Coordinates are inclusive.
-    pub fn flush_rect(
-        &mut self,
-        canvas: &Canvas,
-        x0: u16,
-        y0: u16,
-        x1: u16,
-        y1: u16,
-    ) -> Result<()> {
-        let x1 = x1.min(self.width.saturating_sub(1));
-        let y1 = y1.min(self.height.saturating_sub(1));
-        if x0 > x1 || y0 > y1 {
+    /// Push the band currently selected by [`Canvas::begin_band`].
+    pub fn flush_band(&mut self, canvas: &Canvas) -> Result<()> {
+        let rows = canvas.band_rows();
+        if rows == 0 {
             return Ok(());
         }
-        self.set_window(x0, y0, x1, y1)?;
+        let top = canvas.band_top();
+        let y1 = (top + rows - 1).min(self.height.saturating_sub(1));
+        self.set_window(0, top, self.width.saturating_sub(1), y1)?;
 
         // 16-bit big-endian pixel stream, chunked to keep the tx buffer small.
         const CHUNK_PX: usize = 2048;
@@ -188,8 +185,8 @@ impl Display {
         let mut used = 0usize;
 
         self.dc.set_high().ok();
-        for y in y0..=y1 {
-            for x in x0..=x1 {
+        for y in top..=y1 {
+            for x in 0..self.width {
                 let v = canvas.get(x, y);
                 buf[used] = (v >> 8) as u8;
                 buf[used + 1] = (v & 0xFF) as u8;
@@ -209,26 +206,32 @@ impl Display {
         }
         Ok(())
     }
-
-    /// Push the whole canvas.
-    pub fn flush_all(&mut self, canvas: &Canvas) -> Result<()> {
-        self.flush_rect(canvas, 0, 0, self.width - 1, self.height - 1)
-    }
 }
 
-/// RGB565 framebuffer. On the S3 this allocation lands in PSRAM.
+/// RGB565 strip framebuffer.
+///
+/// Only `band_rows` scanlines are allocated. Drawing still uses full-screen
+/// coordinates; anything outside the selected band is dropped. On a 240x320
+/// panel a 40-row band costs 19 KB of internal SRAM, so no PSRAM is needed.
 pub struct Canvas {
     width: u16,
     height: u16,
+    band_top: u16,
+    band_rows: u16,
+    cap_rows: u16,
     buf: Vec<u16>,
 }
 
 impl Canvas {
-    pub fn new(width: u16, height: u16) -> Self {
+    pub fn new(width: u16, height: u16, band_rows: u16) -> Self {
+        let band_rows = band_rows.clamp(1, height);
         Self {
             width,
             height,
-            buf: vec![0u16; width as usize * height as usize],
+            band_top: 0,
+            band_rows,
+            cap_rows: band_rows,
+            buf: vec![0u16; width as usize * band_rows as usize],
         }
     }
 
@@ -237,25 +240,58 @@ impl Canvas {
     }
 
     #[inline]
+    pub fn band_top(&self) -> u16 {
+        self.band_top
+    }
+
+    #[inline]
+    pub fn band_rows(&self) -> u16 {
+        self.band_rows
+    }
+
+    /// Select the vertical slice painted by the next render pass.
+    pub fn begin_band(&mut self, top: u16) {
+        self.band_top = top.min(self.height);
+        self.band_rows = self.cap_rows.min(self.height - self.band_top);
+    }
+
+    #[inline]
+    fn row_of(&self, y: u16) -> Option<usize> {
+        if y < self.band_top || y >= self.band_top + self.band_rows {
+            None
+        } else {
+            Some((y - self.band_top) as usize)
+        }
+    }
+
+    #[inline]
     pub fn get(&self, x: u16, y: u16) -> u16 {
-        if x >= self.width || y >= self.height {
+        if x >= self.width {
             return 0;
         }
-        self.buf[y as usize * self.width as usize + x as usize]
+        match self.row_of(y) {
+            Some(row) => self.buf[row * self.width as usize + x as usize],
+            None => 0,
+        }
     }
 
     #[inline]
     pub fn put(&mut self, x: i32, y: i32, color: Rgb565) {
-        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+        if x < 0 || y < 0 {
             return;
         }
-        let idx = y as usize * self.width as usize + x as usize;
+        let (x, y) = (x as u16, y as u16);
+        if x >= self.width {
+            return;
+        }
+        let Some(row) = self.row_of(y) else { return };
+        let idx = row * self.width as usize + x as usize;
         self.buf[idx] = pack(color);
     }
 
     pub fn clear(&mut self, color: Rgb565) {
-        let v = pack(color);
-        self.buf.iter_mut().for_each(|p| *p = v);
+        let n = self.width as usize * self.band_rows as usize;
+        self.buf[..n].fill(pack(color));
     }
 }
 
@@ -282,26 +318,14 @@ impl DrawTarget for Canvas {
     where
         I: IntoIterator<Item = Rgb565>,
     {
-        let full = *area;
-        if full.size.width == 0 || full.size.height == 0 {
+        if area.size.width == 0 || area.size.height == 0 {
             return Ok(());
         }
-        let clipped = full.intersection(&self.bounding_box());
-        if clipped.size.width == 0 || clipped.size.height == 0 {
-            return Ok(());
-        }
-        let cx0 = clipped.top_left.x;
-        let cy0 = clipped.top_left.y;
-        let cx1 = cx0 + clipped.size.width as i32 - 1;
-        let cy1 = cy0 + clipped.size.height as i32 - 1;
-
         let mut it = colors.into_iter();
-        for y in full.top_left.y..full.top_left.y + full.size.height as i32 {
-            for x in full.top_left.x..full.top_left.x + full.size.width as i32 {
+        for y in area.top_left.y..area.top_left.y + area.size.height as i32 {
+            for x in area.top_left.x..area.top_left.x + area.size.width as i32 {
                 let Some(c) = it.next() else { return Ok(()) };
-                if x >= cx0 && x <= cx1 && y >= cy0 && y <= cy1 {
-                    self.put(x, y, c);
-                }
+                self.put(x, y, c);
             }
         }
         Ok(())
@@ -312,20 +336,20 @@ impl DrawTarget for Canvas {
         if area.size.width == 0 || area.size.height == 0 {
             return Ok(());
         }
+        let x0 = area.top_left.x.max(0) as usize;
+        let x1 = (area.top_left.x + area.size.width as i32).min(self.width as i32) as usize;
+        let y0 = area.top_left.y.max(self.band_top as i32) as u16;
+        let y1 = (area.top_left.y + area.size.height as i32)
+            .min((self.band_top + self.band_rows) as i32) as u16;
+        if x0 >= x1 || y0 >= y1 {
+            return Ok(());
+        }
         let v = pack(color);
-        let x0 = area.top_left.x;
-        let y0 = area.top_left.y;
-        for y in y0..y0 + area.size.height as i32 {
-            if y < 0 || y >= self.height as i32 {
-                continue;
-            }
-            let row = y as usize * self.width as usize;
-            for x in x0..x0 + area.size.width as i32 {
-                if x < 0 || x >= self.width as i32 {
-                    continue;
-                }
-                self.buf[row + x as usize] = v;
-            }
+        let width = self.width as usize;
+        for y in y0..y1 {
+            let row = (y - self.band_top) as usize;
+            let base = row * width;
+            self.buf[base + x0..base + x1].fill(v);
         }
         Ok(())
     }

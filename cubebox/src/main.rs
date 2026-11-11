@@ -415,8 +415,16 @@ fn run_ui(
         return;
     }
 
-    let mut canvas = Canvas::new(board::DISPLAY_WIDTH, board::DISPLAY_HEIGHT);
-    log::info!("[ui] canvas {} KB", canvas.bytes() / 1024);
+    let mut canvas = Canvas::new(
+        board::DISPLAY_WIDTH,
+        board::DISPLAY_HEIGHT,
+        board::DISPLAY_BAND_ROWS,
+    );
+    log::info!(
+        "[ui] canvas {} KB ({} rows/band)",
+        canvas.bytes() / 1024,
+        board::DISPLAY_BAND_ROWS
+    );
 
     let buttons: [PinDriver<'static, esp_idf_svc::hal::gpio::Input>; 4] = match (|| {
         Ok::<_, esp_idf_svc::sys::EspError>([
@@ -436,14 +444,8 @@ fn run_ui(
     let mut ui = Ui::new();
 
     // Force a first paint.
-    {
-        let mut st = app.lock().unwrap();
-        st.bump();
-        ui.render(&mut canvas, &st);
-    }
-    if let Err(e) = display.flush_all(&canvas) {
-        log::error!("[ui] flush failed: {e}");
-    }
+    app.lock().unwrap().bump();
+    paint(&mut display, &mut canvas, &mut ui, &app);
 
     loop {
         let now = shared::api::now_ms();
@@ -458,15 +460,28 @@ fn run_ui(
 
         let redraw = {
             let st = app.lock().unwrap();
-            ui.render_if_needed(&mut canvas, &st)
+            ui.needs_redraw(&st)
         };
         if redraw {
-            if let Err(e) = display.flush_all(&canvas) {
-                log::error!("[ui] flush failed: {e}");
-            }
+            paint(&mut display, &mut canvas, &mut ui, &app);
         }
 
         FreeRtos::delay_ms(20);
+    }
+}
+
+/// Paint every horizontal band of the screen and flush it to the panel.
+fn paint(display: &mut Display, canvas: &mut Canvas, ui: &mut Ui, app: &SharedState) {
+    let st = app.lock().unwrap();
+    let mut top = 0u16;
+    while top < board::DISPLAY_HEIGHT {
+        canvas.begin_band(top);
+        ui.render(canvas, &st);
+        if let Err(e) = display.flush_band(canvas) {
+            log::error!("[ui] flush failed: {e}");
+            return;
+        }
+        top += board::DISPLAY_BAND_ROWS;
     }
 }
 

@@ -36,8 +36,11 @@ impl Ui {
         }
     }
 
-    /// Returns true when the canvas was actually redrawn.
-    pub fn render_if_needed(&mut self, canvas: &mut Canvas, st: &AppState) -> bool {
+    /// True when the state differs from what was last painted.
+    ///
+    /// The caller re-runs [`Ui::render`] for every display band (the canvas
+    /// only holds one horizontal strip at a time).
+    pub fn needs_redraw(&mut self, st: &AppState) -> bool {
         let phase = st.phase();
         let tenth = st.elapsed_ms() / 100;
         let changed = st.revision != self.last_revision
@@ -49,10 +52,11 @@ impl Ui {
         self.last_revision = st.revision;
         self.last_phase = phase;
         self.last_elapsed_tenth = tenth;
-        self.render(canvas, st);
         true
     }
 
+    /// Paint the whole screen into the canvas's current band. Coordinates are
+    /// absolute; the canvas clips rows outside the band.
     pub fn render(&mut self, canvas: &mut Canvas, st: &AppState) {
         canvas.clear(BG);
         self.top_bar(canvas, st);

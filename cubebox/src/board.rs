@@ -24,6 +24,13 @@
 pub const DISPLAY_WIDTH: u16 = 240;
 pub const DISPLAY_HEIGHT: u16 = 320;
 
+/// Scanlines buffered at a time. The UI is painted once per band and flushed
+/// immediately, so peak framebuffer RAM is `width * DISPLAY_BAND_ROWS * 2`
+/// (19.2 KB here) instead of a full 153.6 KB frame - this is what makes the
+/// firmware viable on an ESP32-C3 without PSRAM. Larger = fewer SPI window
+/// setup round-trips; smaller = less RAM.
+pub const DISPLAY_BAND_ROWS: u16 = 40;
+
 /// SPI clock for the panel. ST7789 tolerates 40 MHz on short traces; drop to
 /// 20 MHz if the panel shows noise after wiring changes.
 pub const DISPLAY_SPI_HZ: u32 = 40_000_000;
